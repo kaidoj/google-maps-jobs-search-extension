@@ -334,15 +334,24 @@ document.addEventListener('DOMContentLoaded', function() {
       statusMessage.textContent = message.status;
       progressBar.style.width = message.progress + '%';
     } else if (message.action === 'addResult') {
-      // Add result to internal array for CSV export
-      allResults.push(message.result);
+      // Check if this website URL is already in the results to prevent duplicates
+      const isDuplicate = allResults.some(existingResult => 
+        existingResult.website === message.result.website
+      );
       
-      // Add result to the UI
-      addResultToList(message.result);
-      
-      // Enable export button when we have results
-      if (allResults.length > 0) {
-        exportCsvButton.disabled = false;
+      if (!isDuplicate) {
+        // Add result to internal array for CSV export
+        allResults.push(message.result);
+        
+        // Add result to the UI
+        addResultToList(message.result);
+        
+        // Enable export button when we have results
+        if (allResults.length > 0) {
+          exportCsvButton.disabled = false;
+        }
+      } else {
+        console.log('Skipping duplicate result:', message.result.website);
       }
     } else if (message.action === 'searchComplete') {
       statusMessage.textContent = 'Search completed!';

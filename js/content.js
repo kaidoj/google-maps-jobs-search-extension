@@ -415,6 +415,9 @@ async function collectSearchResults() {
 async function processResultItems(resultItems) {
   updatePopupProgress(`Processing ${resultItems.length} businesses...`, 30);
   
+  // Set to track URLs we've already processed to avoid duplicates
+  const processedUrls = new Set();
+  
   for (let i = 0; i < resultItems.length; i++) {
     const progress = 30 + (i / resultItems.length) * 20;
     updatePopupProgress(`Processing business ${i+1} of ${resultItems.length}...`, progress);
@@ -429,9 +432,21 @@ async function processResultItems(resultItems) {
       // Extract business information
       const businessInfo = await extractBusinessInfo();
       
-      if (businessInfo && businessInfo.website) {
-        // Add to the website queue for further processing
+      if (businessInfo) {
+        // Check if we already have a business with this URL in our queue
+        if (businessInfo.website) {
+          if (processedUrls.has(businessInfo.website)) {
+            console.log(`Skipping duplicate URL: ${businessInfo.website}`);
+            continue; // Skip adding this duplicate to the queue
+          }
+          
+          // Add to our set of processed URLs
+          processedUrls.add(businessInfo.website);
+        }
+        
+        // Add to the website queue
         websiteQueue.push(businessInfo);
+        console.log(`Added business to queue: ${businessInfo.businessName}, URL: ${businessInfo.website || 'No website'}`);
       }
       
       // Look for the back button with multiple possible selectors
@@ -465,6 +480,9 @@ async function processResultItems(resultItems) {
     }
   }
   
+  // Log the number of businesses added to the queue
+  console.log(`Added ${websiteQueue.length} businesses to the processing queue`);
+  
   // Start processing websites
   processWebsiteQueue();
 }
@@ -472,108 +490,193 @@ async function processResultItems(resultItems) {
 // Extract business information from the details panel
 async function extractBusinessInfo() {
   try {
-    // Wait for the business name to appear with more comprehensive selectors for all Google Maps versions
+    // Initialize variables
     let businessName = 'Unknown Business';
+    let website = '';
+    let address = '';
+
+    // Define list of terms to filter out
+    const filterTerms = [
+      'Sponsored', 'Gesponsert', 'Sponsorisé', 'Patrocinado', 'Sponsorizzato', '広告', 'Results',
+      'Google Maps', 'Google', 'Maps', 'Google Maps App'
+    ];
+
+    // Wait for the business details panel to fully load
+    await new Promise(resolve => setTimeout(resolve, 500));
     
-    // First, try to find elements with specific aria-labels that typically contain the business name
-    const ariaLabelSelectors = [
-      '[aria-label*="Information for"]',
-      '[aria-label*="Details for"]',
-      '[aria-label*="about"]',
-      'h1[aria-label]',
-      'div[aria-label]:not([aria-label="Results"])',
-      'button[aria-label*="Share"]' // Often has format "Share [Business Name]"
+    console.log('Extracting business information from details panel...');
+    
+    // First try to get the website URL
+    const websiteSelectors = [
+      'a[data-item-id="authority"]',
+      'a[data-tooltip="Open website"]',
+      '.section-info-line a[data-tooltip="Open website"]',
+      'a[aria-label*="website" i]',
+      'button[aria-label*="website" i] ~ a',
+      '[data-section-id="action:website"] > a',
+      'a[data-item-id^="authority"]',
+      'a[jsaction*="Website" i]',
+      'a.fontBodyMedium[target="_blank"][rel="noopener"]'
     ];
     
-    // Try each aria-label selector first as they're usually most reliable
-    for (const selector of ariaLabelSelectors) {
-      const element = document.querySelector(selector);
-      if (element) {
-        // Extract the business name from the aria-label attribute
-        const ariaLabel = element.getAttribute('aria-label');
-        if (ariaLabel) {
-          // Try to extract business name from the aria-label attribute
-          // Common formats: "Information for [Business Name]", "Details for [Business Name]", etc.
-          let extractedName = ariaLabel;
-          
-          if (ariaLabel.includes('Information for ')) {
-            extractedName = ariaLabel.replace('Information for ', '');
-          } else if (ariaLabel.includes('Details for ')) {
-            extractedName = ariaLabel.replace('Details for ', '');
-          } else if (ariaLabel.includes('Share ')) {
-            extractedName = ariaLabel.replace('Share ', '');
+    // Find the website URL element
+    let websiteElem = null;
+    for (const selector of websiteSelectors) {
+      websiteElem = document.querySelector(selector);
+      if (websiteElem && websiteElem.href) {
+        website = websiteElem.href;
+        console.log('Found website URL:', website);
+        break;
+      }
+    }
+    
+    // If we found a website element, look for the business name in the same container
+    if (websiteElem) {
+      // Try to find the main business details container that contains the website element
+      let container = null;
+      let element = websiteElem;
+      const containerSelectors = ['.m6QErb', '.RcCsl', '.XltNde', '.aNGVpg', '.m6QErb-qJTHM-LgbsSe', '.lXJj5c'];
+      
+      // First try to find a direct ancestor that is a container
+      for (let i = 0; i < 6; i++) { // Limit ancestor search depth
+        if (!element || !element.parentElement) break;
+        
+        element = element.parentElement;
+        
+        // Check if this parent is one of our container types
+        const isContainer = containerSelectors.some(selector => {
+          return element.matches && element.matches(selector);
+        });
+        
+        if (isContainer) {
+          container = element;
+          console.log('Found container containing website element');
+          break;
+        }
+      }
+      
+      // If we didn't find a specific container, use the main details panel as container
+      if (!container) {
+        containerSelectors.forEach(selector => {
+          if (!container) {
+            container = document.querySelector(selector);
+            if (container) {
+              console.log('Using main details panel as container');
+            }
           }
-          
-          // If we found a valid name, use it
-          if (extractedName && extractedName !== 'Results' && 
-              extractedName !== 'Sponsored' && !extractedName.includes('Google Maps')) {
-            businessName = extractedName;
-            console.log('Found business name from aria-label:', businessName);
-            break;
+        });
+      }
+      
+      // If we found a container, look for the business name within it
+      if (container) {
+        // First look for h1 elements within the container
+        const headingSelectors = [
+          'h1', 'h1.DUwDvf', 'h1.fontHeadlineLarge', 'div.fontHeadlineLarge',
+          '[role="heading"][aria-level="1"]'
+        ];
+        
+        for (const selector of headingSelectors) {
+          const headingElement = container.querySelector(selector);
+          if (headingElement) {
+            const text = headingElement.textContent.trim();
+            const isFilteredTerm = filterTerms.some(term => 
+              text === term || text.includes(term)
+            );
+            
+            if (text && text.length > 1 && !isFilteredTerm) {
+              businessName = text;
+              console.log('Found business name from heading in same container as website:', businessName);
+              break;
+            }
+          }
+        }
+        
+        // If we still don't have a business name, try to find it in any element with a role="heading"
+        if (businessName === 'Unknown Business') {
+          const roleHeadings = container.querySelectorAll('[role="heading"]');
+          for (const heading of roleHeadings) {
+            const text = heading.textContent.trim();
+            const isFilteredTerm = filterTerms.some(term => 
+              text === term || text.includes(term)
+            );
+            
+            if (text && text.length > 1 && !isFilteredTerm) {
+              businessName = text;
+              console.log('Found business name from role="heading" in same container as website:', businessName);
+              break;
+            }
           }
         }
       }
     }
     
-    // If aria-label approach didn't work, try the standard element selectors
+    // If we still don't have a business name, fall back to the main heading elements
     if (businessName === 'Unknown Business') {
-      // Expanded list of selectors to find business name in various Google Maps layouts
-      let businessNameElem = await waitForElementWithOptions([
-        'h1:not(:empty)', 
-        '.section-hero-header-title', 
-        '.fontHeadlineLarge:not(:empty)', 
-        '[role="heading"]:not(:empty)',
+      console.log('Could not find business name in same container as website, falling back to main heading...');
+      
+      // Try the main heading elements that typically contain the business name
+      const mainHeadingSelectors = [
+        'h1.DUwDvf', 
+        'h1.fontHeadlineLarge', 
         '.x3AX1-LfntMc-header-title-title',
-        '.DUwDvf:not(:empty)',
-        '.x3AX1-LfntMc-header-title',
-        'h1.fontHeadlineLarge:not(:empty)',
-        'div[jsan*="fontHeadlineLarge"]:not(:empty)',
-        'div[jsaction*="titlecard"]:not(:empty)',
-        '.kc5Ald:not(:empty)',
-        'h1.fontHeadlineLarge span:not(:empty)',
-        'div.v83gc:not(:empty)',
-        '.qBF1Pd:not(:empty)',
-        '.bRJIte:not(:empty)'
-      ], 2000);
+        '[role="main"] h1',
+        'div.fontHeadlineLarge'
+      ];
       
-      if (businessNameElem) {
-        const potentialName = businessNameElem.textContent.trim();
-        // Only use the element text if it's not a generic text like "Results" or "Sponsored"
-        if (potentialName && 
-            potentialName !== 'Results' && 
-            potentialName !== 'Sponsored' && 
-            potentialName.length > 1) {
-          businessName = potentialName;
-          console.log('Found business name from element text:', businessName);
-        }
-      }
-    }
-    
-    // Last resort: try to find any reasonable heading that might contain the business name
-    if (businessName === 'Unknown Business' || 
-        businessName === 'Results' || 
-        businessName === 'Sponsored') {
-      console.log('Using fallback to find better business name...');
-      
-      const allHeadings = document.querySelectorAll('h1, h2, h3, [role="heading"], .fontHeadlineLarge');
-      for (const heading of allHeadings) {
-        if (heading.offsetParent !== null) { // Check if visible
-          const headingText = heading.textContent.trim();
-          if (headingText && 
-              headingText !== 'Results' && 
-              headingText !== 'Sponsored' && 
-              headingText !== 'Google Maps' &&
-              headingText.length > 1) {
-            businessName = headingText;
-            console.log('Found business name from fallback heading:', businessName);
+      for (const selector of mainHeadingSelectors) {
+        const headingElement = document.querySelector(selector);
+        if (headingElement) {
+          const text = headingElement.textContent.trim();
+          const isFilteredTerm = filterTerms.some(term => 
+            text === term || text.includes(term)
+          );
+          
+          if (text && text.length > 1 && !isFilteredTerm) {
+            businessName = text;
+            console.log('Found business name from main heading:', businessName);
             break;
           }
         }
       }
     }
+    
+    // If we still don't have a business name, try document title
+    if (businessName === 'Unknown Business') {
+      console.log('Trying to extract from document title...');
+      const title = document.title;
+      if (title) {
+        // Remove "Google Maps" part
+        const cleanTitle = title.replace(' - Google Maps', '')
+                               .replace('Google Maps', '')
+                               .trim();
+                               
+        const isFilteredTerm = filterTerms.some(term => 
+          cleanTitle === term || 
+          cleanTitle.includes(term)
+        );
+        
+        if (cleanTitle && cleanTitle.length > 1 && !isFilteredTerm) {
+          businessName = cleanTitle;
+          console.log('Found business name from document title:', businessName);
+        }
+      }
+    }
+    
+    // Remove any "Google Maps" text from the business name
+    if (businessName.includes('Google Maps')) {
+      businessName = businessName.replace('Google Maps', '').trim();
+    }
+    
+    // Final validation
+    if (businessName === 'Google' || businessName === 'Maps' || businessName === 'Google Maps' || 
+        businessName === 'Sponsored' || businessName === 'Gesponsert' || businessName === 'Results' ||
+        businessName.length < 2) {
+      businessName = 'Unknown Business';
+    }
+    
+    console.log('Final extracted business name:', businessName);
     
     // Get the address with more flexible selectors
-    let address = '';
     const addressSelectors = [
       'button[data-item-id="address"]',
       '[data-tooltip="Copy address"]',
@@ -582,7 +685,6 @@ async function extractBusinessInfo() {
       'button[aria-label*="address" i]',
       'button[aria-label*="Address" i]',
       'button[aria-label*="location" i]',
-      // Additional selector for the new Google Maps layout
       '[data-section-id="address"] button',
       '.fontBodyMedium span:first-child'
     ];
@@ -598,30 +700,6 @@ async function extractBusinessInfo() {
     // Clean the address from special characters
     if (address) {
       address = cleanAddress(address);
-    }
-    
-    // Get the website URL with more flexible selectors
-    let website = '';
-    const websiteSelectors = [
-      'a[data-item-id="authority"]',
-      'a[data-tooltip="Open website"]',
-      '.section-info-line a[data-tooltip="Open website"]',
-      'a[aria-label*="website" i]',
-      'a[href^="http"]:not([href*="google"])',
-      'button[aria-label*="website" i] ~ a',
-      // Additional selector for the new Google Maps layout
-      '[data-section-id="action:website"] > a',
-      'a[data-item-id^="authority"]',
-      'a[jsaction*="Website" i]',
-      'a.fontBodyMedium[target="_blank"][rel="noopener"]'
-    ];
-    
-    for (const selector of websiteSelectors) {
-      const websiteElem = document.querySelector(selector);
-      if (websiteElem && websiteElem.href) {
-        website = websiteElem.href;
-        break;
-      }
     }
     
     return {
