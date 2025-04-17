@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Google Maps Job Search</title>
+  <link rel="stylesheet" href="../css/popup.css">
+</head>
+<body>
+  <div class="container">
+    <h1>Google Maps Job Search</h1>
+    
+    <div class="form-group">
+      <label for="location">Location:</label>
+      <input type="text" id="location" placeholder="e.g. Berlin, Germany">
+      <p class="help-text">Leave empty to use the current Google Maps view</p>
+    </div>
+    
+    <div class="form-group">
+      <label for="keywords">Job Keywords (comma separated):</label>
+      <input type="text" id="keywords" placeholder="e.g. developer, programmer, engineer">
+      <p class="help-text">Enter job titles or fields you're looking for</p>
+    </div>
+    
+    <div class="form-group">
+      <label for="max-results">Max Results:</label>
+      <input type="number" id="max-results" min="1" value="20">
+      <p class="help-text">Maximum number of websites to process</p>
+    </div>
+    
+    <div class="form-group">
+      <label for="website-keywords">Website Keywords (comma separated):</label>
+      <div class="input-with-button">
+        <input type="text" id="website-keywords" placeholder="e.g. job, career, hiring">
+        <button id="reset-website-keywords" class="secondary-button small-button">Reset</button>
+      </div>
+      <p class="tooltip-text-fixed">
+        <span class="tooltip-icon-inline">?</span>
+        Keywords used to scan websites for job-related content
+      </p>
+      <p class="help-text">Edit terms used to identify job opportunities on websites</p>
+    </div>
+    
+    <button id="start-search" class="primary-button">Start Job Search</button>
+    
+    <div id="results-container" class="hidden">
+      <h2>Search Results</h2>
+      <div id="status-message"></div>
+      <div id="progress-bar-container">
+        <div id="progress-bar"></div>
+      </div>
+      <div id="results-actions">
+        <button id="export-csv" class="action-button" disabled>Export to CSV</button>
+      </div>
+      <div id="results-list"></div>
+    </div>
+  </div>
+  
+  <script src="popup.js"></script>
+</body>
+</html>

@@ -1,0 +1,51 @@
+# macOS system files
+.DS_Store
+.AppleDouble
+.LSOverride
+Icon
+._*
+.Spotlight-V100
+.Trashes
+
+# Node.js dependencies
+node_modules/
+npm-debug.log
+yarn-debug.log
+yarn-error.log
+package-lock.json
+yarn.lock
+
+# Chrome Extension development
+*.pem
+*.crx
+*.zip
+
+# IDE and editor folders
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Debug files
+debug.log
+
+# Temporary files
+temp/
+tmp/
+*.tmp
+
+# Build output
+dist/
+build/
+
+# Environment variables
+.env
+.env.local
+
+# User-specific files
+*.sublime-project
+*.sublime-workspace
+
+# Cached data
+.cache/
