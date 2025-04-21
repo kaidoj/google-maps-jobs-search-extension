@@ -1,4 +1,4 @@
-# Google Maps Jobs Search Extension
+# Google Maps Jobs Search Extension made with LLM using Copilot Agent and Claude 3.7 Sonnet
 
 A Chrome extension that helps you find job opportunities by searching businesses on Google Maps and analyzing their websites for job listings and contact information.
 
