@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "Google Maps Job Search Helper",
   "version": "1.0",
-  "description": "Discover hidden job opportunities from business websites using Google Maps, tailored to your preferred location, and export results to CSV.",
+  "description": "Find hidden job opportunities on business websites via Google Maps, tailored to your location, and export results to CSV.",
   "permissions": [
     "activeTab",
     "storage",
