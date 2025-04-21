@@ -49,3 +49,7 @@ build/
 
 # Cached data
 .cache/
+
+# Releases
+!releases/chrome/.gitkeep
+releases/chrome/
