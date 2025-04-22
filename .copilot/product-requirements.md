@@ -23,8 +23,9 @@
 13. Make sure we don't get blocked by Google by making the usage more human like but a bit more faster then normal.
 14. Stop search when the popup closes.
 15. Disable search button when search is already running.
-16. Reset google maps state when new search starts.
-17. Follow best practices for security like XSS protection, etc.
-18. Create all required extension files for me (manifest, background, content scripts, etc.).
-19. Add readme how to run this in chrome with extension dev mode.
-20. Add licence MIT.
+16. Make sure the google maps page is not refresh when navigating between businesses on google maps
+17. Reset google maps state when new search starts.
+18. Follow best practices for security like XSS protection, etc.
+19. Create all required extension files for me (manifest, background, content scripts, etc.).
+20. Add readme how to run this in chrome with extension dev mode.
+21. Add licence MIT.

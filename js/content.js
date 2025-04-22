@@ -9,6 +9,37 @@ let websiteQueue = [];
 function initialize() {
   console.log('Google Maps Job Search content script initialized');
   
+  // Check if we need to restore state after a page refresh
+  try {
+    if (sessionStorage.getItem('gmjs_search_in_progress') === 'true') {
+      console.log('Detected interrupted search, attempting to restore state');
+      const storedQueue = sessionStorage.getItem('gmjs_websiteQueue');
+      const storedSearchData = sessionStorage.getItem('gmjs_searchData');
+      
+      if (storedQueue && storedSearchData) {
+        websiteQueue = JSON.parse(storedQueue);
+        searchData = JSON.parse(storedSearchData);
+        
+        if (websiteQueue.length > 0) {
+          // Clear the stored state to prevent infinite restore loops
+          sessionStorage.removeItem('gmjs_search_in_progress');
+          sessionStorage.removeItem('gmjs_websiteQueue');
+          sessionStorage.removeItem('gmjs_searchData');
+          sessionStorage.removeItem('gmjs_currentIndex');
+          
+          // Resume from website processing since we already have the queue
+          console.log('Resuming search with recovered data');
+          searchInProgress = true;
+          setTimeout(() => {
+            processWebsiteQueue();
+          }, 1000);
+        }
+      }
+    }
+  } catch (e) {
+    console.error('Error checking for saved search state:', e);
+  }
+  
   // Listen for messages from popup
   chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     console.log('Received message:', message.action, message.data ? 'with data' : '');
@@ -423,13 +454,81 @@ async function processResultItems(resultItems) {
     updatePopupProgress(`Processing business ${i+1} of ${resultItems.length}...`, progress);
     
     try {
-      // Click on the result item to view details
-      resultItems[i].click();
+      // Store current URL and document title before clicking
+      const originalUrl = window.location.href;
+      const originalTitle = document.title;
+      
+      console.log(`Processing business ${i+1}: About to click result`);
+      
+      // IMPORTANT: Use a more controlled approach to open business details
+      // Instead of directly clicking the element (which might navigate to a new URL)
+      // We'll try to use Google Maps internal navigation mechanisms
+      
+      // 1. First try - use event listeners to intercept default navigation
+      let clickHandled = false;
+      const preventNavigation = (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        console.log('Prevented default navigation behavior');
+        clickHandled = true;
+      };
+      
+      // Add temporary event listeners to prevent navigation
+      window.addEventListener('beforeunload', preventNavigation, true);
+      
+      // Check if this is a place link we can parse
+      const placeLink = resultItems[i].getAttribute('href') || '';
+      if (placeLink.includes('/maps/place/')) {
+        // Parse place ID from the URL if possible
+        try {
+          const placeIdMatch = placeLink.match(/!1s([^!]+)/);
+          if (placeIdMatch && placeIdMatch[1]) {
+            const placeId = placeIdMatch[1];
+            console.log(`Found place ID: ${placeId}, using alternative navigation method`);
+            
+            // Try to find the place card without navigating
+            resultItems[i].focus();
+            
+            // Simulate click but on mousedown/mouseup instead of click event
+            resultItems[i].dispatchEvent(new MouseEvent('mousedown', {bubbles: true}));
+            resultItems[i].dispatchEvent(new MouseEvent('mouseup', {bubbles: true}));
+            
+            // Instead of click, which might cause navigation
+            await new Promise(resolve => setTimeout(resolve, 1000));
+          }
+        } catch (e) {
+          console.error('Error parsing place ID:', e);
+        }
+      }
+      
+      // If we couldn't handle it with place ID, try normal click but carefully
+      if (!clickHandled) {
+        console.log('Using standard click with navigation safeguards');
+        // Click the result directly, while still preventing page reload
+        resultItems[i].click();
+      }
+      
+      // Remove the navigation prevention handler
+      window.removeEventListener('beforeunload', preventNavigation, true);
       
       // Wait for the business details to load
       await new Promise(resolve => setTimeout(resolve, 1500));
       
-      // Extract business information
+      // Check if we navigated to a new page unexpectedly
+      const urlChanged = window.location.href !== originalUrl;
+      const titleChanged = document.title !== originalTitle;
+      
+      if (urlChanged) {
+        console.warn(`URL changed unexpectedly: ${originalUrl} → ${window.location.href}`);
+        
+        // Save state in case we need to recover
+        sessionStorage.setItem('gmjs_search_in_progress', 'true');
+        sessionStorage.setItem('gmjs_websiteQueue', JSON.stringify(websiteQueue));
+        sessionStorage.setItem('gmjs_searchData', JSON.stringify(searchData));
+        sessionStorage.setItem('gmjs_currentIndex', i.toString());
+      }
+      
+      // Extract business information even if URL changed
       const businessInfo = await extractBusinessInfo();
       
       if (businessInfo) {
@@ -449,31 +548,137 @@ async function processResultItems(resultItems) {
         console.log(`Added business to queue: ${businessInfo.businessName}, URL: ${businessInfo.website || 'No website'}`);
       }
       
-      // Look for the back button with multiple possible selectors
-      const backButtonSelectors = [
-        'button[aria-label="Back"]',
-        'button[jsaction*="back"]',
-        'button.hYBOP',
-        'button[aria-label="Back to results"]',
-        'button[aria-label="Back to search results"]',
-        'button[data-tooltip="Back"]',
-        'button.VfPpkd-icon-button',
-        'button.searchbox-button.searchbox-back'
-      ];
+      // Navigate back based on multiple strategies
+      let navigatedBack = false;
       
-      let backButton = null;
-      for (const selector of backButtonSelectors) {
-        backButton = document.querySelector(selector);
-        if (backButton) break;
+      // If the URL changed (full page navigation happened)
+      if (urlChanged) {
+        // Try to restore the original URL using pushState
+        try {
+          console.log('Attempting to restore original URL using pushState');
+          window.history.pushState({}, '', originalUrl);
+          await new Promise(resolve => setTimeout(resolve, 800));
+          
+          // Check if we're back to search results
+          const resultsVisible = !!(document.querySelector('div[role="feed"]') || 
+                                   document.querySelector('div[role="list"]'));
+          
+          if (resultsVisible) {
+            console.log('Successfully restored to search results via pushState');
+            navigatedBack = true;
+          } else {
+            // If pushState didn't get us back to results, use history.back() cautiously
+            console.log('pushState didn\'t restore results view, trying history.back()');
+            history.back();
+            await new Promise(resolve => setTimeout(resolve, 1000));
+            
+            // Check again if we have results
+            const resultsVisibleAfterBack = !!(document.querySelector('div[role="feed"]') || 
+                                             document.querySelector('div[role="list"]'));
+            
+            if (resultsVisibleAfterBack) {
+              console.log('Successfully navigated back via history.back()');
+              navigatedBack = true;
+            }
+          }
+        } catch (e) {
+          console.error('Error navigating with history:', e);
+        }
+      } else {
+        // URL didn't change, so we're dealing with a panel overlay
+        // Try closing the panel instead of navigating back
+        
+        // 1. Try different selectors for back buttons
+        const backButtonSelectors = [
+          'button[aria-label="Back"]',
+          'button[jsaction*="back"]',
+          'button.hYBOP',
+          'button[aria-label="Back to results"]',
+          'button[aria-label="Back to search results"]',
+          'button[data-tooltip="Back"]',
+          'button.VfPpkd-icon-button',
+          'button.searchbox-button.searchbox-back',
+          'button[jsaction*="backclick"]',
+          'button.DVeyrd',
+          'button[data-tooltip*="back" i]',
+          'button[jsaction="pane.backButtonClicked"]'
+        ];
+        
+        for (const selector of backButtonSelectors) {
+          const backButton = document.querySelector(selector);
+          if (backButton) {
+            console.log(`Found back button with selector: ${selector}`);
+            backButton.click();
+            await new Promise(resolve => setTimeout(resolve, 800));
+            
+            // Check if we successfully navigated back by checking if results list is visible
+            if (document.querySelector('div[role="feed"]') || document.querySelector('div[role="list"]')) {
+              navigatedBack = true;
+              console.log('Successfully navigated back via back button');
+              break;
+            }
+          }
+        }
+        
+        // 2. If back button didn't work, try closing the panel
+        if (!navigatedBack) {
+          const closeButtonSelectors = [
+            'button[aria-label="Close"]',
+            'button[jsaction*="close"]',
+            'button[data-tooltip="Close"]',
+            'img.iRxY3GoUYUY__close',
+            'button[jsaction="pane.dismiss"]',
+            '.IPwzOs-icon-common[aria-label="Close"]',
+            'button.VfPpkd-icon-button[data-tooltip="Close"]'
+          ];
+          
+          for (const selector of closeButtonSelectors) {
+            const closeButton = document.querySelector(selector);
+            if (closeButton) {
+              console.log(`Found close button with selector: ${selector}`);
+              closeButton.click();
+              await new Promise(resolve => setTimeout(resolve, 800));
+              
+              // Check if we successfully navigated back
+              if (document.querySelector('div[role="feed"]') || document.querySelector('div[role="list"]')) {
+                navigatedBack = true;
+                console.log('Successfully navigated back via close button');
+                break;
+              }
+            }
+          }
+        }
       }
       
-      if (backButton) {
-        backButton.click();
-        await new Promise(resolve => setTimeout(resolve, 800));
-      } else {
-        console.warn('Back button not found, trying to navigate back via history');
-        history.back();
-        await new Promise(resolve => setTimeout(resolve, 1000));
+      // If we still haven't navigated back successfully, look for the results feed
+      if (!navigatedBack) {
+        const resultsFeed = document.querySelector('div[role="feed"]') || document.querySelector('div[role="list"]');
+        if (resultsFeed) {
+          console.log('Found results feed without navigation, continuing...');
+          navigatedBack = true;
+        } else {
+          console.warn('Failed to return to results view. Trying to recover...');
+          
+          // Try the Google Maps logo as a last resort
+          const homeButtons = document.querySelectorAll('a[aria-label="Google Maps"], a.google-maps-link');
+          if (homeButtons.length > 0) {
+            console.log('Clicking Google Maps logo to reset view');
+            homeButtons[0].click();
+            await new Promise(resolve => setTimeout(resolve, 1200));
+            
+            // If we clicked home, we need to re-execute the search
+            if (searchData) {
+              console.log('Re-executing search after clicking home button');
+              startBusinessSearch();
+              
+              // Wait for search to complete and results to load
+              await new Promise(resolve => setTimeout(resolve, 3000));
+              
+              // Indicate that this iteration failed but we're continuing
+              console.log('Search re-executed, but this business was skipped');
+            }
+          }
+        }
       }
     } catch (error) {
       console.error('Error processing business:', error);
