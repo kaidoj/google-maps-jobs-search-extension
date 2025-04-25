@@ -273,14 +273,81 @@ function startBusinessSearch() {
     return;
   }
   
-  // Add appropriate location to query
-  if (!searchData.location || searchData.location.trim() === '') {
-    // If no location specified, use "in current area"
-    query += ' in current area';
-  } else {
-    // If location is specified, use "in [location]"
-    query += ` in ${searchData.location.trim()}`;
+  // Get the language from the URL to determine the search format
+  const host = window.location.host;
+  // Extract the language/country code from the domain (e.g., google.fr, google.de)
+  const langMatch = host.match(/google\.([a-z.]+)$/i);
+  let languageCode = langMatch ? langMatch[1] : 'com';
+  
+  // Check if it's a compound domain like co.uk
+  if (languageCode && languageCode.includes('.')) {
+    const parts = languageCode.split('.');
+    // Take the last part as the country code (e.g., uk from co.uk)
+    languageCode = parts[parts.length - 1];
   }
+  
+  console.log(`Detected language/country code: ${languageCode}`);
+  
+  // Set appropriate location phrase based on detected language
+  let inLocationPhrase = ' in '; // Default English
+  let inCurrentAreaPhrase = ' in current area'; // Default English
+  
+  // Define phrases for different languages
+  const languagePhrases = {
+    'fr': { inLocation: ' dans ', inCurrentArea: ' dans la zone actuelle' },
+    'de': { inLocation: ' in ', inCurrentArea: ' im aktuellen Bereich' },
+    'es': { inLocation: ' en ', inCurrentArea: ' en el área actual' },
+    'it': { inLocation: ' a ', inCurrentArea: ' nell\'area corrente' },
+    'pt': { inLocation: ' em ', inCurrentArea: ' na área atual' },
+    'nl': { inLocation: ' in ', inCurrentArea: ' in huidige omgeving' },
+    'ru': { inLocation: ' в ', inCurrentArea: ' в текущей области' },
+    'ja': { inLocation: ' ', inCurrentArea: ' 現在のエリア' }, // Japanese often doesn't use prepositions
+    'zh': { inLocation: ' ', inCurrentArea: ' 当前区域' }, // Chinese often doesn't use prepositions
+    'ar': { inLocation: ' في ', inCurrentArea: ' في المنطقة الحالية' },
+    'pl': { inLocation: ' w ', inCurrentArea: ' w obecnym obszarze' },
+    'tr': { inLocation: ' ', inCurrentArea: ' mevcut bölgede' }, // Turkish uses suffixes instead of prepositions
+    'ko': { inLocation: ' ', inCurrentArea: ' 현재 지역' } // Korean often doesn't use prepositions
+  };
+  
+  // Map country codes to language codes if needed
+  const countryToLanguage = {
+    'uk': 'en', // United Kingdom -> English
+    'au': 'en', // Australia -> English
+    'ca': 'en', // Canada -> English (default, could be French too)
+    'ie': 'en', // Ireland -> English
+    'nz': 'en', // New Zealand -> English
+    'za': 'en', // South Africa -> English
+    'at': 'de', // Austria -> German
+    'ch': 'de', // Switzerland -> German (default, could be French/Italian too)
+    'be': 'fr', // Belgium -> French (default, could be Dutch too)
+    'br': 'pt', // Brazil -> Portuguese
+    'mx': 'es', // Mexico -> Spanish
+    'ar': 'es', // Argentina -> Spanish
+    'cl': 'es', // Chile -> Spanish
+    'co': 'es'  // Colombia -> Spanish
+  };
+  
+  // Get language code from country code if we have a mapping
+  const mappedLanguage = countryToLanguage[languageCode.toLowerCase()];
+  if (mappedLanguage) {
+    languageCode = mappedLanguage;
+  }
+  
+  // Get phrases for the detected language or fall back to English
+  const phrases = languagePhrases[languageCode.toLowerCase()] || { inLocation: ' in ', inCurrentArea: ' in current area' };
+  inLocationPhrase = phrases.inLocation;
+  inCurrentAreaPhrase = phrases.inCurrentArea;
+  
+  // Add appropriate location to query using the language-specific phrase
+  if (!searchData.location || searchData.location.trim() === '') {
+    // If no location specified, use language-specific "in current area" phrase
+    query += inCurrentAreaPhrase;
+  } else {
+    // If location is specified, use language-specific "in [location]" phrase
+    query += `${inLocationPhrase}${searchData.location.trim()}`;
+  }
+  
+  console.log(`Search query in ${languageCode}: ${query}`);
   
   // Find the search box and enter the search query
   findSearchBox()
