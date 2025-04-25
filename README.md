@@ -2,6 +2,8 @@
 
 A Chrome extension that helps you find job opportunities by searching businesses on Google Maps and analyzing their websites for job listings and contact information.
 
+Available on [Chrome Web Store](https://chromewebstore.google.com/detail/google-maps-job-search-he/nicoepfjkeehhlnioobfdpabjgnebhhb)
+
 ## Features
 
 - Search for businesses on Google Maps based on keywords and location
