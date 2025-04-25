@@ -1,4 +1,4 @@
-# Makefile for Google Maps Jobs Search Chrome extension
+# Makefile for Hidden Job Search Helper Chrome extension
 
 # Variables
 EXTENSION_NAME = google-maps-jobs-search
@@ -23,7 +23,7 @@ all: help
 # Help information
 .PHONY: help
 help:
-	@echo "Google Maps Jobs Search Extension Make Commands"
+	@echo "Hidden Job Search Helper Extension Make Commands"
 	@echo "----------------------------------------------"
 	@echo "build-chrome   : Build the Chrome extension (zip for Chrome Web Store)"
 	@echo "clean          : Remove built packages"

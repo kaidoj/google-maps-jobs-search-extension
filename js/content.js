@@ -7,7 +7,7 @@ let websiteQueue = [];
 
 // Initialize when the page loads
 function initialize() {
-  console.log('Google Maps Job Search content script initialized');
+  console.log('Hidden Job Search Helper content script initialized');
   
   // Check if we need to restore state after a page refresh
   try {

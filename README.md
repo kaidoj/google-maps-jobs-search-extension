@@ -1,4 +1,4 @@
-# Google Maps Jobs Search Extension made with LLM using Copilot Agent and Claude 3.7 Sonnet
+# Hidden Job Search Helper Extension made with LLM using Copilot Agent and Claude 3.7 Sonnet
 
 A Chrome extension that helps you find job opportunities by searching businesses on Google Maps and analyzing their websites for job listings and contact information.
 
@@ -34,7 +34,7 @@ To install and run this extension in Chrome developer mode:
 
 5. **Verify installation**
    - The extension should now appear in your list of extensions
-   - You should see the Google Maps Jobs Search icon in your browser toolbar
+   - You should see the Hidden Job Search Helper icon in your browser toolbar
 
 ## Usage
 

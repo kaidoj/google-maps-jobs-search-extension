@@ -1,16 +1,16 @@
-# Privacy Policy for Google Maps Jobs Search Chrome Extension
+# Privacy Policy for Hidden Job Search Helper Chrome Extension
 
 *Last updated: April 21, 2025*
 
 ## Introduction
 
-This Privacy Policy explains how the Google Maps Jobs Search Chrome extension ("we", "our", or "the Extension") collects, uses, and protects your information when you use our Extension. We are committed to ensuring that your privacy is protected and being transparent about how we handle your data.
+This Privacy Policy explains how the Hidden Job Search Helper Chrome extension ("we", "our", or "the Extension") collects, uses, and protects your information when you use our Extension. We are committed to ensuring that your privacy is protected and being transparent about how we handle your data.
 
 ## Information Collection and Use
 
 ### Information We Collect
 
-The Google Maps Jobs Search Extension collects and processes the following information:
+The Hidden Job Search Helper Extension collects and processes the following information:
 
 1. **Search Parameters**: Keywords, locations, and other search criteria you enter in the Extension.
 2. **Website Data**: Information gathered from public websites that are visited through Google Maps, including:
@@ -95,4 +95,4 @@ This Extension complies with the Chrome Web Store Developer Program Policies, in
 
 ## Your Consent
 
-By using the Google Maps Jobs Search Extension, you consent to this Privacy Policy.
+By using the Hidden Job Search Helper Extension, you consent to this Privacy Policy.

@@ -1,4 +1,4 @@
-// Background script for Google Maps Job Search extension
+// Background script for Hidden Job Search Helper extension
 let activeTabId = null;
 let websiteProcessingQueue = [];
 let processingInProgress = false;
