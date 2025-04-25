@@ -227,7 +227,7 @@ document.addEventListener('DOMContentLoaded', function() {
       const currentTab = tabs[0];
       
       // Check if we're on Google Maps
-      if (currentTab.url.includes('google.com/maps')) {
+      if (/google\.(com|fr)\/maps/.test(currentTab.url)) {
         // First, send a message to reset the Google Maps state programmatically
         try {
           chrome.tabs.sendMessage(
