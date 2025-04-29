@@ -408,6 +408,10 @@ async function collectSearchResults() {
     const maxResults = searchData.maxResults || 20;
     console.log(`Max results limit: ${maxResults}`);
     
+    // Track how many items we need to get in order to achieve the required non-cached results
+    // Start with the max limit, but this may increase if we find cached items
+    let targetResultCount = maxResults;
+    
     // Function to get all result items from the feed
     function getResultItems(feed) {
       // Try different selectors to find result items
@@ -445,63 +449,47 @@ async function collectSearchResults() {
     prevResultCount = resultItems.length;
     console.log(`Initially found ${prevResultCount} business results`);
     
-    // If we already have enough results, don't scroll
-    if (resultItems.length >= maxResults) {
-      console.log(`Already have ${resultItems.length} results, which is >= max limit of ${maxResults}. Stopping scrolling.`);
-      // Limit the result items to the max results
-      resultItems = resultItems.slice(0, maxResults);
-    } else {
-      // Scroll and collect more results until we have enough or can't find more
-      while (scrollAttempts < MAX_SCROLL_ATTEMPTS) {
-        if (resultItems.length >= maxResults) {
-          console.log(`Reached max results limit (${maxResults}). Stopping scrolling.`);
-          // Limit the result items to the max results
-          resultItems = resultItems.slice(0, maxResults);
+    // Instead of limiting right away, we'll keep scrolling to get more results
+    // than our target in case some are in cache
+    while (scrollAttempts < MAX_SCROLL_ATTEMPTS && resultItems.length < targetResultCount + 10) {
+      updatePopupProgress(`Loading more results (scroll attempt ${scrollAttempts + 1})...`, 20 + (scrollAttempts / MAX_SCROLL_ATTEMPTS * 5));
+      
+      // Scroll the results feed to the bottom
+      resultsFeed.scrollTo({
+        top: resultsFeed.scrollHeight,
+        behavior: 'smooth'
+      });
+      
+      // Wait for potential new results to load
+      await new Promise(resolve => setTimeout(resolve, 1500));
+      
+      // Get updated list of results
+      resultItems = getResultItems(resultsFeed);
+      
+      // If we didn't get any new results after scrolling, we can stop
+      if (resultItems.length <= prevResultCount) {
+        scrollAttempts++;
+        
+        // If we've tried a few times with no new results, assume we're at the end
+        if (scrollAttempts >= 3 && resultItems.length === prevResultCount) {
+          console.log('No new results after multiple scroll attempts, likely reached the end');
           break;
         }
-        
-        updatePopupProgress(`Loading more results (scroll attempt ${scrollAttempts + 1})...`, 20 + (scrollAttempts / MAX_SCROLL_ATTEMPTS * 5));
-        
-        // Scroll the results feed to the bottom
-        resultsFeed.scrollTo({
-          top: resultsFeed.scrollHeight,
-          behavior: 'smooth'
-        });
-        
-        // Wait for potential new results to load
-        await new Promise(resolve => setTimeout(resolve, 1500));
-        
-        // Get updated list of results
-        resultItems = getResultItems(resultsFeed);
-        
-        // If we didn't get any new results after scrolling, we can stop
-        if (resultItems.length <= prevResultCount) {
-          scrollAttempts++;
-          
-          // If we've tried a few times with no new results, assume we're at the end
-          if (scrollAttempts >= 3 && resultItems.length === prevResultCount) {
-            console.log('No new results after multiple scroll attempts, likely reached the end');
-            break;
-          }
-        } else {
-          // Reset attempts counter if we got new results
-          scrollAttempts = 0;
-          console.log(`Found ${resultItems.length - prevResultCount} new results (total: ${resultItems.length})`);
-          prevResultCount = resultItems.length;
-        }
+      } else {
+        // Reset attempts counter if we got new results
+        scrollAttempts = 0;
+        console.log(`Found ${resultItems.length - prevResultCount} new results (total: ${resultItems.length})`);
+        prevResultCount = resultItems.length;
       }
     }
     
-    // Ensure we don't process more than the max results limit
-    if (resultItems.length > maxResults) {
-      console.log(`Limiting results to max ${maxResults} (found ${resultItems.length})`);
-      resultItems = resultItems.slice(0, maxResults);
-    }
+    // Note: We don't limit the results here as we might need more depending on how many are in cache
+    // We'll process all the found results, and let the processResultItems function handle the limit
     
     updatePopupProgress(`Found ${resultItems.length} businesses. Processing...`, 25);
     
-    // Process each result item to get business info
-    await processResultItems(resultItems);
+    // Process each result item to get business info and handle the max result limit dynamically
+    await processResultItems(resultItems, maxResults);
     
   } catch (error) {
     updatePopupProgress(`Error collecting search results: ${error.message}`, 0);
@@ -510,15 +498,26 @@ async function collectSearchResults() {
 }
 
 // Process each result item to extract business information
-async function processResultItems(resultItems) {
+async function processResultItems(resultItems, maxResults) {
   updatePopupProgress(`Processing ${resultItems.length} businesses...`, 30);
   
   // Set to track URLs we've already processed to avoid duplicates
   const processedUrls = new Set();
   
+  // Counter for new websites (websites requiring fresh processing)
+  let freshWebsiteCount = 0;
+  // Counter for skipped previously visited websites
+  let skippedPreviouslyVisitedCount = 0;
+  
   for (let i = 0; i < resultItems.length; i++) {
+    // If we've reached our target of fresh sites, stop processing
+    if (freshWebsiteCount >= maxResults) {
+      console.log(`Reached target of ${maxResults} new websites. Stopping processing.`);
+      break;
+    }
+    
     const progress = 30 + (i / resultItems.length) * 20;
-    updatePopupProgress(`Processing business ${i+1} of ${resultItems.length}...`, progress);
+    updatePopupProgress(`Processing business ${i+1}/${resultItems.length} (${freshWebsiteCount} collected, ${skippedPreviouslyVisitedCount} skipped)...`, progress);
     
     try {
       // Store current URL and document title before clicking
@@ -601,18 +600,40 @@ async function processResultItems(resultItems) {
       if (businessInfo) {
         // Check if we already have a business with this URL in our queue
         if (businessInfo.website) {
+          // Skip duplicate websites in the current queue
           if (processedUrls.has(businessInfo.website)) {
             console.log(`Skipping duplicate URL: ${businessInfo.website}`);
             continue; // Skip adding this duplicate to the queue
           }
           
+          // Check if this website was previously visited
+          const wasVisitedBefore = await checkUrlInPreviouslyVisited(businessInfo.website);
+          if (wasVisitedBefore) {
+            console.log(`Skipping ${businessInfo.businessName} - already visited before`);
+            // Increment the skipped previously visited counter
+            skippedPreviouslyVisitedCount++;
+            // Don't add to websiteQueue - we're completely skipping previously visited websites
+            
+            // Add to our set of processed URLs to avoid duplicates
+            processedUrls.add(businessInfo.website);
+            
+            // Continue to the next business without clicking back
+            continue;
+          }
+          
           // Add to our set of processed URLs
           processedUrls.add(businessInfo.website);
+          
+          // Increment our count of fresh websites
+          freshWebsiteCount++;
+        } else {
+          // Website without a URL is always considered fresh
+          freshWebsiteCount++;
         }
         
         // Add to the website queue
         websiteQueue.push(businessInfo);
-        console.log(`Added business to queue: ${businessInfo.businessName}, URL: ${businessInfo.website || 'No website'}`);
+        console.log(`Added new business to queue: ${businessInfo.businessName}, URL: ${businessInfo.website || 'No website'}`);
       }
       
       // Navigate back based on multiple strategies
@@ -752,8 +773,8 @@ async function processResultItems(resultItems) {
     }
   }
   
-  // Log the number of businesses added to the queue
-  console.log(`Added ${websiteQueue.length} businesses to the processing queue`);
+  // Log the final counts
+  console.log(`Added ${websiteQueue.length} new businesses to the processing queue (skipped ${skippedPreviouslyVisitedCount} previously visited businesses)`);
   
   // Start processing websites
   processWebsiteQueue();
@@ -1309,3 +1330,46 @@ function cancelSearch() {
 
 // Initialize the content script
 initialize();
+
+// Function to check if a URL was previously visited and saved
+async function checkUrlInPreviouslyVisited(url) {
+  return new Promise((resolve) => {
+    // First check if saving previously visited sites is enabled
+    chrome.storage.local.get(['enableCache', 'cacheTime'], function(settings) {
+      const savePreviouslyVisited = settings.enableCache !== false; // Default to true if not set
+      
+      // If saving previously visited sites is disabled, resolve with null
+      if (!savePreviouslyVisited) {
+        resolve(null);
+        return;
+      }
+      
+      const rememberDays = settings.cacheTime || 30; // Default to 30 days if not set
+      const dataKey = 'cached_' + btoa(url); // Base64 encode the URL as the key
+      
+      // Check for saved data
+      chrome.storage.local.get([dataKey], function(data) {
+        if (data[dataKey]) {
+          const savedData = data[dataKey];
+          const now = new Date().getTime();
+          const expirationTime = savedData.timestamp + (rememberDays * 24 * 60 * 60 * 1000); // Convert days to milliseconds
+          
+          // Check if saved data is still valid
+          if (now < expirationTime) {
+            // Data is valid, return it
+            resolve(savedData.data);
+          } else {
+            // Data is expired, remove it
+            chrome.storage.local.remove([dataKey], function() {
+              console.log('Removed expired saved data for:', url);
+              resolve(null);
+            });
+          }
+        } else {
+          // No saved data found
+          resolve(null);
+        }
+      });
+    });
+  });
+}

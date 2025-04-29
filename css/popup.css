@@ -33,7 +33,7 @@ label {
   margin-bottom: 5px;
 }
 
-input[type="text"] {
+input[type="text"], input[type="number"] {
   width: 100%;
   padding: 8px;
   border: 1px solid #ccc;
@@ -124,6 +124,39 @@ button:disabled:hover {
   background-color: #3d8b40;
 }
 
+.icon-button {
+  background: none;
+  border: none;
+  padding: 8px;
+  cursor: pointer;
+  margin: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  color: #666;
+}
+
+.icon-button:hover {
+  background-color: #f1f1f1;
+  border-radius: 50%;
+  color: #1a73e8;
+}
+
+.icon-button svg {
+  width: 18px;
+  height: 18px;
+  stroke: currentColor;
+}
+
+.header-container {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 16px;
+}
+
 #results-actions {
   margin: 10px 0;
   display: flex;
@@ -170,7 +203,7 @@ button:disabled:hover {
   font-size: 13px;
   color: #666;
   margin: 8px 0;
-  padding: 4px 8px;
+  padding: 8px;
   background-color: #f8f8f8;
   border-radius: 4px;
 }
@@ -184,6 +217,7 @@ button:disabled:hover {
 .result-item {
   padding: 10px;
   border-bottom: 1px solid #eee;
+  position: relative;
 }
 
 .result-item h3 {
@@ -257,4 +291,21 @@ button:disabled:hover {
   font-size: 12px;
   margin-right: 6px;
   flex-shrink: 0;
+}
+
+.success-message, .info-message {
+  margin: 10px 0;
+  padding: 8px;
+  border-radius: 4px;
+  font-size: 13px;
+}
+
+.success-message {
+  background-color: #e6f4ea;
+  color: #1e8e3e;
+}
+
+.info-message {
+  background-color: #e8eaed;
+  color: #5f6368;
 }

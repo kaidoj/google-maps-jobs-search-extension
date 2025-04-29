@@ -11,6 +11,7 @@ document.addEventListener('DOMContentLoaded', function() {
   const progressBar = document.getElementById('progress-bar');
   const resultsList = document.getElementById('results-list');
   const exportCsvButton = document.getElementById('export-csv');
+  const settingsButton = document.getElementById('settings-button');
   
   let allResults = []; // Store all results for CSV export
   
@@ -40,6 +41,11 @@ document.addEventListener('DOMContentLoaded', function() {
         }
       });
     }
+  });
+  
+  // Settings button click handler
+  settingsButton.addEventListener('click', function() {
+    window.location.href = 'settings.html';
   });
   
   // Function to show cancel search option
@@ -159,7 +165,8 @@ document.addEventListener('DOMContentLoaded', function() {
       'Found Keywords',
       'Contact Email',
       'Contact Page',
-      'Last Checked'
+      'Last Checked',
+      'Cached'
     ];
     
     // Start with headers
@@ -175,7 +182,8 @@ document.addEventListener('DOMContentLoaded', function() {
         escapeForCsv(result.jobKeywords ? result.jobKeywords.join('; ') : ''),
         escapeForCsv(result.contactEmail || ''),
         escapeForCsv(result.contactPage || ''),
-        result.lastChecked ? new Date(result.lastChecked).toLocaleString() : ''
+        result.lastChecked ? new Date(result.lastChecked).toLocaleString() : '',
+        result.fromCache ? 'Yes' : 'No'
       ];
       
       csvContent += row.join(',') + '\n';
@@ -194,6 +202,49 @@ document.addEventListener('DOMContentLoaded', function() {
       return `"${field}"`;
     }
     return field;
+  }
+  
+  // Function to check if a URL is in the cache
+  function checkUrlInCache(url) {
+    return new Promise((resolve) => {
+      // First check if cache is enabled
+      chrome.storage.local.get(['enableCache', 'cacheTime'], function(settings) {
+        const cacheEnabled = settings.enableCache !== false; // Default to true if not set
+        
+        // If cache is disabled, resolve with null
+        if (!cacheEnabled) {
+          resolve(null);
+          return;
+        }
+        
+        const cacheTime = settings.cacheTime || 30; // Default to 30 days if not set
+        const cacheKey = 'cached_' + btoa(url); // Base64 encode the URL as the key
+        
+        // Check for cached data
+        chrome.storage.local.get([cacheKey], function(data) {
+          if (data[cacheKey]) {
+            const cachedData = data[cacheKey];
+            const now = new Date().getTime();
+            const expirationTime = cachedData.timestamp + (cacheTime * 24 * 60 * 60 * 1000); // Convert days to milliseconds
+            
+            // Check if cache is still valid
+            if (now < expirationTime) {
+              // Cache is valid, return the data
+              resolve(cachedData.data);
+            } else {
+              // Cache is expired, remove it
+              chrome.storage.local.remove([cacheKey], function() {
+                console.log('Removed expired cache entry:', url);
+                resolve(null);
+              });
+            }
+          } else {
+            // No cache entry found
+            resolve(null);
+          }
+        });
+      });
+    });
   }
   
   // Start search button click handler
@@ -369,6 +420,11 @@ document.addEventListener('DOMContentLoaded', function() {
   function addResultToList(result) {
     const resultItem = document.createElement('div');
     resultItem.className = 'result-item';
+    
+    // Add 'cached-result' class if the result came from cache
+    if (result.fromCache) {
+      resultItem.classList.add('cached-result');
+    }
     
     const title = document.createElement('h3');
     title.textContent = result.businessName;

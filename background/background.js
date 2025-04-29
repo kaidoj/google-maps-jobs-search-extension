@@ -16,16 +16,24 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     // Set max results limit from search data
     maxResultsLimit = message.data.searchData.maxResults || 20;
     
-    // Queue websites for processing, but limit to max results
-    const websitesToProcess = message.data.websites.slice(0, maxResultsLimit);
+    console.log(`Processing websites with max results limit: ${maxResultsLimit}`);
     
-    websiteProcessingQueue = websitesToProcess.map(site => ({
-      ...site,
-      processed: false,
-      jobKeywords: [],
-      contactEmail: null,
-      contactPage: null
-    }));
+    // Get websites from the content script (these should all be fresh websites, 
+    // as cached ones are already filtered out in content.js)
+    const websites = message.data.websites;
+    
+    console.log(`Received ${websites.length} fresh websites to process`);
+    
+    // Initialize the processing queue (all sites are fresh, not from cache)
+    websiteProcessingQueue = websites.map(site => {
+      return {
+        ...site,
+        processed: false,
+        jobKeywords: [],
+        contactEmail: null,
+        contactPage: null
+      };
+    });
     
     // Store search data
     const searchData = message.data.searchData;
@@ -65,6 +73,75 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 });
 
+// Function to check if a URL is in the cache
+function checkUrlInCache(url) {
+  return new Promise((resolve) => {
+    // First check if cache is enabled
+    chrome.storage.local.get(['enableCache', 'cacheTime'], function(settings) {
+      const cacheEnabled = settings.enableCache !== false; // Default to true if not set
+      
+      // If cache is disabled, resolve with null
+      if (!cacheEnabled) {
+        resolve(null);
+        return;
+      }
+      
+      const cacheTime = settings.cacheTime || 30; // Default to 30 days if not set
+      const cacheKey = 'cached_' + btoa(url); // Base64 encode the URL as the key
+      
+      // Check for cached data
+      chrome.storage.local.get([cacheKey], function(data) {
+        if (data[cacheKey]) {
+          const cachedData = data[cacheKey];
+          const now = new Date().getTime();
+          const expirationTime = cachedData.timestamp + (cacheTime * 24 * 60 * 60 * 1000); // Convert days to milliseconds
+          
+          // Check if cache is still valid
+          if (now < expirationTime) {
+            // Cache is valid, return the data
+            resolve(cachedData.data);
+          } else {
+            // Cache is expired, remove it
+            chrome.storage.local.remove([cacheKey], function() {
+              console.log('Removed expired cache entry:', url);
+              resolve(null);
+            });
+          }
+        } else {
+          // No cache entry found
+          resolve(null);
+        }
+      });
+    });
+  });
+}
+
+// Function to cache a website result
+function cacheWebsiteResult(url, result) {
+  // First check if cache is enabled
+  chrome.storage.local.get(['enableCache'], function(settings) {
+    const cacheEnabled = settings.enableCache !== false; // Default to true if not set
+    
+    // If cache is disabled, don't cache
+    if (!cacheEnabled) {
+      return;
+    }
+    
+    const cacheKey = 'cached_' + btoa(url); // Base64 encode the URL as the key
+    
+    // Create cache entry
+    const cacheEntry = {
+      timestamp: new Date().getTime(),
+      data: result
+    };
+    
+    // Store in cache
+    chrome.storage.local.set({ [cacheKey]: cacheEntry }, function() {
+      console.log('Cached result for:', url);
+    });
+  });
+}
+
 // Process the next website in the queue
 function processNextWebsite(searchData) {
   // Check if there are any unprocessed websites
@@ -94,16 +171,25 @@ function processNextWebsite(searchData) {
   
   // Debug log to check businessName
   console.log('Processing website with name:', website.businessName);
-  console.log('Full website object:', JSON.stringify(website));
   
-  // Update progress
-  const progress = 50 + ((nextWebsiteIndex / websiteProcessingQueue.length) * 50);
+  // Update progress - show current website being processed
+  const processedCount = websiteProcessingQueue.filter(site => site.processed).length;
+  const totalCount = Math.min(websiteProcessingQueue.length, maxResultsLimit);
+  const progress = 50 + ((processedCount / totalCount) * 50);
+  
   forwardMessageToPopup({
     action: 'updateProgress',
-    status: `Processing website (${nextWebsiteIndex + 1}/${websiteProcessingQueue.length}): ${website.businessName || 'Unknown Business'}`,
+    status: `Processing website ${processedCount + 1} of ${totalCount}: ${website.businessName || 'Unknown Business'}`,
     progress
   });
   
+  // Content.js has already filtered out cached websites,
+  // so we can process this website directly
+  processWebsiteWithTab(website, nextWebsiteIndex, searchData);
+}
+
+// Process website by creating a new tab
+function processWebsiteWithTab(website, nextWebsiteIndex, searchData) {
   // Create a new tab to visit the website
   chrome.tabs.create({ 
     url: website.website,
@@ -137,12 +223,18 @@ function processNextWebsite(searchData) {
           if (results && results[0] && results[0].result) {
             const result = results[0].result;
             
+            // Add lastChecked timestamp for cache age
+            result.lastChecked = new Date().toISOString();
+            
             // Mark website as processed
             websiteProcessingQueue[nextWebsiteIndex] = {
               ...website,
               ...result,
               processed: true
             };
+            
+            // Cache the result for future use
+            cacheWebsiteResult(website.website, result);
             
             // If job keywords or contact info was found, add to results
             if ((result.jobKeywords && result.jobKeywords.length > 0) || 
@@ -154,7 +246,7 @@ function processNextWebsite(searchData) {
                 jobKeywords: result.jobKeywords || [],
                 contactEmail: result.contactEmail,
                 contactPage: result.contactPage,
-                lastChecked: new Date().toISOString()
+                lastChecked: result.lastChecked
               };
               
               searchResults.push(completeResult);
@@ -199,12 +291,20 @@ function processNextWebsite(searchData) {
       if (!loadCompleted) {
         console.log(`Timeout: Website ${website.website} took too long to load (> 15s)`);
         
+        const result = {
+          processed: true,
+          timedOut: true,
+          lastChecked: new Date().toISOString()
+        };
+        
         // Mark website as processed with a timeout flag
         websiteProcessingQueue[nextWebsiteIndex] = {
           ...website,
-          processed: true,
-          timedOut: true
+          ...result
         };
+        
+        // Cache the timeout result
+        cacheWebsiteResult(website.website, result);
         
         // Send the timeout result to popup with complete business info
         forwardMessageToPopup({
@@ -214,7 +314,7 @@ function processNextWebsite(searchData) {
             address: website.address,
             website: website.website,
             timedOut: true,
-            lastChecked: new Date().toISOString()
+            lastChecked: result.lastChecked
           }
         });
         
