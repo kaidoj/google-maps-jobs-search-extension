@@ -399,7 +399,7 @@ async function collectSearchResults() {
     ], 8000);
     
     // Set the maximum number of scrolls to try (prevent infinite scrolling)
-    const MAX_SCROLL_ATTEMPTS = 10;
+    const MAX_SCROLL_ATTEMPTS = 15; // Increased from 10 to allow more scrolling
     let scrollAttempts = 0;
     let prevResultCount = 0;
     let resultItems = [];
@@ -407,10 +407,6 @@ async function collectSearchResults() {
     // Get the max results limit from searchData
     const maxResults = searchData.maxResults || 20;
     console.log(`Max results limit: ${maxResults}`);
-    
-    // Track how many items we need to get in order to achieve the required non-cached results
-    // Start with the max limit, but this may increase if we find cached items
-    let targetResultCount = maxResults;
     
     // Function to get all result items from the feed
     function getResultItems(feed) {
@@ -435,6 +431,12 @@ async function collectSearchResults() {
       return Array.from(items);
     }
     
+    // Initialize tracking variables for fresh vs cached results
+    let processedItems = [];
+    let freshWebsiteCount = 0;
+    let skippedPreviouslyVisitedCount = 0;
+    let processedUrls = new Set();
+    
     // Initial set of results
     resultItems = getResultItems(resultsFeed);
     
@@ -449,12 +451,81 @@ async function collectSearchResults() {
     prevResultCount = resultItems.length;
     console.log(`Initially found ${prevResultCount} business results`);
     
-    // Instead of limiting right away, we'll keep scrolling to get more results
-    // than our target in case some are in cache
-    while (scrollAttempts < MAX_SCROLL_ATTEMPTS && resultItems.length < targetResultCount + 10) {
-      updatePopupProgress(`Loading more results (scroll attempt ${scrollAttempts + 1})...`, 20 + (scrollAttempts / MAX_SCROLL_ATTEMPTS * 5));
+    // This is our main scrolling loop - we'll keep scrolling until we either:
+    // 1. Get enough fresh results
+    // 2. Reach the maximum scroll attempts
+    // 3. Detect we're at the end of available results
+    while (scrollAttempts < MAX_SCROLL_ATTEMPTS && freshWebsiteCount < maxResults) {
+      // Process current batch of items that haven't been processed yet
+      let startIndex = processedItems.length;
       
-      // Scroll the results feed to the bottom
+      // Only process new items that haven't been processed yet
+      for (let i = startIndex; i < resultItems.length; i++) {
+        if (freshWebsiteCount >= maxResults) {
+          break; // Stop if we've reached our target
+        }
+        
+        // Mark this item as processed
+        processedItems.push(resultItems[i]);
+        
+        const progress = 20 + ((processedItems.length / (resultItems.length + 10)) * 10);
+        updatePopupProgress(`Processing business ${processedItems.length}/${resultItems.length} (${freshWebsiteCount} collected)...`, progress);
+        
+        // Process the business item (click, extract info, etc)
+        try {
+          const businessInfo = await processBusinessItem(resultItems[i]);
+          
+          // If we got valid business info
+          if (businessInfo) {
+            // Check if we already have this website in our queue or processed it
+            if (businessInfo.website) {
+              // Skip duplicate websites
+              if (processedUrls.has(businessInfo.website)) {
+                console.log(`Skipping duplicate URL: ${businessInfo.website}`);
+                continue;
+              }
+              
+              // Check if this website was previously visited/cached
+              const wasVisitedBefore = await checkUrlInPreviouslyVisited(businessInfo.website);
+              if (wasVisitedBefore) {
+                console.log(`Skipping ${businessInfo.businessName} - already visited before`);
+                skippedPreviouslyVisitedCount++;
+                processedUrls.add(businessInfo.website);
+                continue;
+              }
+              
+              // Add to processed URLs set
+              processedUrls.add(businessInfo.website);
+              
+              // Increment fresh website count
+              freshWebsiteCount++;
+            } else {
+              // Website without a URL is always considered fresh
+              freshWebsiteCount++;
+            }
+            
+            // Add to the website queue
+            websiteQueue.push(businessInfo);
+            console.log(`Added new business to queue: ${businessInfo.businessName}, Website: ${businessInfo.website || 'No website'}`);
+          }
+        } catch (error) {
+          console.error('Error processing business:', error);
+        }
+      }
+      
+      // Update progress info
+      console.log(`Progress: ${freshWebsiteCount}/${maxResults} fresh websites found, ${skippedPreviouslyVisitedCount} skipped (cached)`);
+      
+      // Check if we've found enough fresh results
+      if (freshWebsiteCount >= maxResults) {
+        console.log(`Reached target of ${maxResults} fresh websites. Stopping collection.`);
+        break;
+      }
+      
+      // If we haven't reached our target, scroll to get more results
+      updatePopupProgress(`Found ${freshWebsiteCount}/${maxResults} fresh websites. Scrolling to load more results...`, 25);
+      
+      // Scroll down to load more results
       resultsFeed.scrollTo({
         top: resultsFeed.scrollHeight,
         behavior: 'smooth'
@@ -464,36 +535,254 @@ async function collectSearchResults() {
       await new Promise(resolve => setTimeout(resolve, 1500));
       
       // Get updated list of results
-      resultItems = getResultItems(resultsFeed);
+      const newResultItems = getResultItems(resultsFeed);
       
-      // If we didn't get any new results after scrolling, we can stop
-      if (resultItems.length <= prevResultCount) {
+      // If we didn't get any new results after scrolling
+      if (newResultItems.length <= resultItems.length) {
         scrollAttempts++;
         
-        // If we've tried a few times with no new results, assume we're at the end
-        if (scrollAttempts >= 3 && resultItems.length === prevResultCount) {
-          console.log('No new results after multiple scroll attempts, likely reached the end');
+        // If we've tried multiple times with no new results, we're likely at the end
+        if (scrollAttempts >= 3 && newResultItems.length === resultItems.length) {
+          console.log(`No new results after ${scrollAttempts} scroll attempts, likely reached the end`);
           break;
         }
       } else {
-        // Reset attempts counter if we got new results
+        // We got new results, reset scroll attempts counter
         scrollAttempts = 0;
-        console.log(`Found ${resultItems.length - prevResultCount} new results (total: ${resultItems.length})`);
-        prevResultCount = resultItems.length;
+        console.log(`Found ${newResultItems.length - resultItems.length} new results (total: ${newResultItems.length})`);
+        
+        // Update our results array with the new items
+        resultItems = newResultItems;
       }
     }
     
-    // Note: We don't limit the results here as we might need more depending on how many are in cache
-    // We'll process all the found results, and let the processResultItems function handle the limit
+    // Log final counts
+    updatePopupProgress(`Finished collecting ${freshWebsiteCount} businesses (${skippedPreviouslyVisitedCount} skipped from cache)`, 30);
     
-    updatePopupProgress(`Found ${resultItems.length} businesses. Processing...`, 25);
+    // If we didn't find enough fresh results but exhausted all available results
+    if (freshWebsiteCount < maxResults) {
+      console.log(`Could only find ${freshWebsiteCount} fresh results out of target ${maxResults}`);
+    }
     
-    // Process each result item to get business info and handle the max result limit dynamically
-    await processResultItems(resultItems, maxResults);
+    // Start processing websites
+    processWebsiteQueue();
     
   } catch (error) {
     updatePopupProgress(`Error collecting search results: ${error.message}`, 0);
     searchInProgress = false;
+  }
+}
+
+// Function to process a single business item from the results list
+async function processBusinessItem(resultItem) {
+  try {
+    // Store current URL and document title before clicking
+    const originalUrl = window.location.href;
+    const originalTitle = document.title;
+    
+    // 1. First try - use event listeners to intercept default navigation
+    let clickHandled = false;
+    const preventNavigation = (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      console.log('Prevented default navigation behavior');
+      clickHandled = true;
+    };
+    
+    // Add temporary event listeners to prevent navigation
+    window.addEventListener('beforeunload', preventNavigation, true);
+    
+    // Check if this is a place link we can parse
+    const placeLink = resultItem.getAttribute('href') || '';
+    if (placeLink.includes('/maps/place/')) {
+      // Parse place ID from the URL if possible
+      try {
+        const placeIdMatch = placeLink.match(/!1s([^!]+)/);
+        if (placeIdMatch && placeIdMatch[1]) {
+          const placeId = placeIdMatch[1];
+          console.log(`Found place ID: ${placeId}, using alternative navigation method`);
+          
+          // Try to find the place card without navigating
+          resultItem.focus();
+          
+          // Simulate click but on mousedown/mouseup instead of click event
+          resultItem.dispatchEvent(new MouseEvent('mousedown', {bubbles: true}));
+          resultItem.dispatchEvent(new MouseEvent('mouseup', {bubbles: true}));
+          
+          // Instead of click, which might cause navigation
+          await new Promise(resolve => setTimeout(resolve, 1000));
+        }
+      } catch (e) {
+        console.error('Error parsing place ID:', e);
+      }
+    }
+    
+    // If we couldn't handle it with place ID, try normal click but carefully
+    if (!clickHandled) {
+      console.log('Using standard click with navigation safeguards');
+      // Click the result directly, while still preventing page reload
+      resultItem.click();
+    }
+    
+    // Remove the navigation prevention handler
+    window.removeEventListener('beforeunload', preventNavigation, true);
+    
+    // Wait for the business details to load
+    await new Promise(resolve => setTimeout(resolve, 1500));
+    
+    // Check if we navigated to a new page unexpectedly
+    const urlChanged = window.location.href !== originalUrl;
+    const titleChanged = document.title !== originalTitle;
+    
+    if (urlChanged) {
+      console.warn(`URL changed unexpectedly: ${originalUrl} → ${window.location.href}`);
+      
+      // Save state in case we need to recover
+      sessionStorage.setItem('gmjs_search_in_progress', 'true');
+      sessionStorage.setItem('gmjs_websiteQueue', JSON.stringify(websiteQueue));
+      sessionStorage.setItem('gmjs_searchData', JSON.stringify(searchData));
+    }
+    
+    // Extract business information even if URL changed
+    const businessInfo = await extractBusinessInfo();
+    
+    // Navigate back based on multiple strategies
+    let navigatedBack = false;
+    
+    // If the URL changed (full page navigation happened)
+    if (urlChanged) {
+      // Try to restore the original URL using pushState
+      try {
+        console.log('Attempting to restore original URL using pushState');
+        window.history.pushState({}, '', originalUrl);
+        await new Promise(resolve => setTimeout(resolve, 800));
+        
+        // Check if we're back to search results
+        const resultsVisible = !!(document.querySelector('div[role="feed"]') || 
+                                 document.querySelector('div[role="list"]'));
+        
+        if (resultsVisible) {
+          console.log('Successfully restored to search results via pushState');
+          navigatedBack = true;
+        } else {
+          // If pushState didn't get us back to results, use history.back() cautiously
+          console.log('pushState didn\'t restore results view, trying history.back()');
+          history.back();
+          await new Promise(resolve => setTimeout(resolve, 1000));
+          
+          // Check again if we have results
+          const resultsVisibleAfterBack = !!(document.querySelector('div[role="feed"]') || 
+                                           document.querySelector('div[role="list"]'));
+          
+          if (resultsVisibleAfterBack) {
+            console.log('Successfully navigated back via history.back()');
+            navigatedBack = true;
+          }
+        }
+      } catch (e) {
+        console.error('Error navigating with history:', e);
+      }
+    } else {
+      // URL didn't change, so we're dealing with a panel overlay
+      // Try closing the panel instead of navigating back
+      
+      // 1. Try different selectors for back buttons
+      const backButtonSelectors = [
+        'button[aria-label="Back"]',
+        'button[jsaction*="back"]',
+        'button.hYBOP',
+        'button[aria-label="Back to results"]',
+        'button[aria-label="Back to search results"]',
+        'button[data-tooltip="Back"]',
+        'button.VfPpkd-icon-button',
+        'button.searchbox-button.searchbox-back',
+        'button[jsaction*="backclick"]',
+        'button.DVeyrd',
+        'button[data-tooltip*="back" i]',
+        'button[jsaction="pane.backButtonClicked"]'
+      ];
+      
+      for (const selector of backButtonSelectors) {
+        const backButton = document.querySelector(selector);
+        if (backButton) {
+          console.log(`Found back button with selector: ${selector}`);
+          backButton.click();
+          await new Promise(resolve => setTimeout(resolve, 800));
+          
+          // Check if we successfully navigated back by checking if results list is visible
+          if (document.querySelector('div[role="feed"]') || document.querySelector('div[role="list"]')) {
+            navigatedBack = true;
+            console.log('Successfully navigated back via back button');
+            break;
+          }
+        }
+      }
+      
+      // 2. If back button didn't work, try closing the panel
+      if (!navigatedBack) {
+        const closeButtonSelectors = [
+          'button[aria-label="Close"]',
+          'button[jsaction*="close"]',
+          'button[data-tooltip="Close"]',
+          'img.iRxY3GoUYUY__close',
+          'button[jsaction="pane.dismiss"]',
+          '.IPwzOs-icon-common[aria-label="Close"]',
+          'button.VfPpkd-icon-button[data-tooltip="Close"]'
+        ];
+        
+        for (const selector of closeButtonSelectors) {
+          const closeButton = document.querySelector(selector);
+          if (closeButton) {
+            console.log(`Found close button with selector: ${selector}`);
+            closeButton.click();
+            await new Promise(resolve => setTimeout(resolve, 800));
+            
+            // Check if we successfully navigated back
+            if (document.querySelector('div[role="feed"]') || document.querySelector('div[role="list"]')) {
+              navigatedBack = true;
+              console.log('Successfully navigated back via close button');
+              break;
+            }
+          }
+        }
+      }
+    }
+    
+    // If we still haven't navigated back successfully, look for the results feed
+    if (!navigatedBack) {
+      const resultsFeed = document.querySelector('div[role="feed"]') || document.querySelector('div[role="list"]');
+      if (resultsFeed) {
+        console.log('Found results feed without navigation, continuing...');
+        navigatedBack = true;
+      } else {
+        console.warn('Failed to return to results view. Trying to recover...');
+        
+        // Try the Google Maps logo as a last resort
+        const homeButtons = document.querySelectorAll('a[aria-label="Google Maps"], a.google-maps-link');
+        if (homeButtons.length > 0) {
+          console.log('Clicking Google Maps logo to reset view');
+          homeButtons[0].click();
+          await new Promise(resolve => setTimeout(resolve, 1200));
+          
+          // If we clicked home, we need to re-execute the search
+          if (searchData) {
+            console.log('Re-executing search after clicking home button');
+            startBusinessSearch();
+            
+            // Wait for search to complete and results to load
+            await new Promise(resolve => setTimeout(resolve, 3000));
+            
+            // Indicate that this iteration failed but we're continuing
+            console.log('Search re-executed, but this business was skipped');
+          }
+        }
+      }
+    }
+    
+    return businessInfo;
+  } catch (error) {
+    console.error('Error processing business item:', error);
+    return null;
   }
 }
 
@@ -774,10 +1063,14 @@ async function processResultItems(resultItems, maxResults) {
   }
   
   // Log the final counts
-  console.log(`Added ${websiteQueue.length} new businesses to the processing queue (skipped ${skippedPreviouslyVisitedCount} previously visited businesses)`);
+  console.log(`Added ${freshWebsiteCount} new businesses to the processing queue (skipped ${skippedPreviouslyVisitedCount} previously visited businesses)`);
   
-  // Start processing websites
-  processWebsiteQueue();
+  // Return processing statistics
+  return {
+    freshWebsiteCount,
+    skippedPreviouslyVisitedCount,
+    totalProcessed: freshWebsiteCount + skippedPreviouslyVisitedCount
+  };
 }
 
 // Extract business information from the details panel
