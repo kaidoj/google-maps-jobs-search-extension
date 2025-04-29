@@ -1306,6 +1306,23 @@ function cancelSearch() {
   currentResultIndex = 0;
   websiteQueue = [];
   
+  // Send message to background script to cancel any ongoing processes
+  chrome.runtime.sendMessage({
+    action: 'cancelSearch'
+  }, response => {
+    console.log('Background script notified of search cancellation:', response);
+  });
+  
+  // Clear any stored search state from session storage
+  try {
+    sessionStorage.removeItem('gmjs_search_in_progress');
+    sessionStorage.removeItem('gmjs_websiteQueue');
+    sessionStorage.removeItem('gmjs_searchData');
+    sessionStorage.removeItem('gmjs_currentIndex');
+  } catch (e) {
+    console.error('Error clearing session storage:', e);
+  }
+  
   // Try to go back to the main Google Maps view to clean up any search state
   try {
     // Try to find the Google Maps home button and click it
@@ -1326,6 +1343,9 @@ function cancelSearch() {
   } catch (e) {
     console.error('Error resetting Google Maps view:', e);
   }
+  
+  // Update progress to inform user that search was cancelled
+  updatePopupProgress('Search cancelled', 0);
 }
 
 // Initialize the content script

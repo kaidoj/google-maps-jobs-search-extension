@@ -157,6 +157,12 @@ button:disabled:hover {
   margin-bottom: 16px;
 }
 
+.header-container h1 {
+  margin: 0;
+  font-size: 18px;
+  color: #1a73e8;
+}
+
 #results-actions {
   margin: 10px 0;
   display: flex;

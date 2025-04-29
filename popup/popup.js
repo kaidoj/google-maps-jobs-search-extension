@@ -38,22 +38,101 @@ document.addEventListener('DOMContentLoaded', function() {
         if (response && response.inProgress) {
           // Create a cancel button if a search is in progress
           showCancelSearchOption();
+          
+          // Restore search state UI
+          restoreSearchState();
+        } else {
+          // If no search is in progress, check if we have a saved state from previous navigation
+          checkForSavedSearchState();
         }
       });
     }
   });
   
+  // Function to save search state before navigating away
+  function saveSearchState() {
+    // Only save if results container is visible (search was started)
+    if (!resultsContainer.classList.contains('hidden')) {
+      const searchState = {
+        status: statusMessage.textContent,
+        progress: progressBar.style.width,
+        results: allResults,
+        visible: true
+      };
+      
+      chrome.storage.session.set({ 'searchState': searchState });
+    }
+  }
+  
+  // Function to check if we have a saved search state
+  function checkForSavedSearchState() {
+    chrome.storage.session.get(['searchState'], function(data) {
+      if (data.searchState) {
+        restoreSearchState(data.searchState);
+      }
+    });
+  }
+  
+  // Function to restore search state from saved data
+  function restoreSearchState(savedState) {
+    // If no state passed, get it from storage
+    if (!savedState) {
+      chrome.storage.session.get(['searchState'], function(data) {
+        if (data.searchState) {
+          applySearchState(data.searchState);
+        }
+      });
+    } else {
+      applySearchState(savedState);
+    }
+  }
+  
+  // Function to apply the saved search state to the UI
+  function applySearchState(state) {
+    if (state.visible) {
+      resultsContainer.classList.remove('hidden');
+      statusMessage.textContent = state.status;
+      progressBar.style.width = state.progress;
+      
+      // Restore results
+      resultsList.innerHTML = ''; // Clear current results
+      allResults = state.results || [];
+      
+      // Display restored results
+      allResults.forEach(result => {
+        addResultToList(result);
+      });
+      
+      // Enable/disable export button
+      exportCsvButton.disabled = allResults.length === 0;
+      
+      // Show cancel button if appropriate
+      if (statusMessage.textContent !== 'Search completed!') {
+        showCancelSearchOption();
+      } else {
+        // If search was completed, re-enable the start button
+        startSearchButton.disabled = false;
+      }
+    }
+  }
+
   // Settings button click handler
   settingsButton.addEventListener('click', function() {
+    saveSearchState();
     window.location.href = 'settings.html';
   });
   
   // Function to show cancel search option
   function showCancelSearchOption() {
+    // Check if cancel button already exists
+    if (document.querySelector('.cancel-search-button')) {
+      return;
+    }
+    
     // Create a cancel button
     const cancelButton = document.createElement('button');
     cancelButton.textContent = 'Cancel Running Search';
-    cancelButton.className = 'secondary-button';
+    cancelButton.className = 'secondary-button cancel-search-button';
     cancelButton.style.marginTop = '10px';
     cancelButton.style.backgroundColor = '#d93025';
     cancelButton.style.color = 'white';

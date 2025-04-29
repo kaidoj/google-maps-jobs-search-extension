@@ -6,6 +6,12 @@ document.addEventListener('DOMContentLoaded', function() {
   const clearCacheButton = document.getElementById('clear-cache');
   const cacheCountElement = document.getElementById('cache-count');
   const cacheStatsContainer = document.getElementById('cache-stats');
+  const backButton = document.getElementById('back-button');
+  
+  // Add back button event listener
+  backButton.addEventListener('click', function() {
+    window.location.href = 'popup.html';
+  });
   
   // Submit handler for settings form
   document.getElementById('settings-form').addEventListener('submit', saveSettings);

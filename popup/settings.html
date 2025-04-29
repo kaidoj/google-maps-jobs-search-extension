@@ -23,22 +23,6 @@
       font-size: 13px;
     }
     
-    .back-link {
-      display: inline-block;
-      margin-top: 10px;
-      text-decoration: none;
-      color: #1a73e8;
-      font-size: 14px;
-      padding: 8px 16px;
-      border-radius: 4px;
-      background-color: #f1f1f1;
-      text-align: center;
-    }
-    
-    .back-link:hover {
-      background-color: #e4e4e4;
-    }
-    
     .saved-message {
       position: fixed;
       bottom: 20px;
@@ -55,7 +39,15 @@
   </style>
 </head>
 <body class="settings-page">
-  <h1>Settings</h1>
+  <div class="header-container">
+    <button id="back-button" class="icon-button" title="Back to Search">
+      <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <line x1="19" y1="12" x2="5" y2="12"></line>
+        <polyline points="12 19 5 12 12 5"></polyline>
+      </svg>
+    </button>
+    <h1>Settings</h1>
+  </div>
 
   <form id="settings-form">
     <div class="form-group">
@@ -79,7 +71,6 @@
 
     <div class="form-group">
       <button type="submit" class="primary-button">Save Settings</button>
-      <a href="popup.html" class="back-link">Back to Search</a>
     </div>
   </form>
 
