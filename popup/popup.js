@@ -248,6 +248,7 @@ document.addEventListener('DOMContentLoaded', function() {
   function generateCsvContent(results) {
     // Define CSV headers
     const headers = [
+      'Score',
       'Business Name',
       'Address',
       'Website',
@@ -260,9 +261,18 @@ document.addEventListener('DOMContentLoaded', function() {
     // Start with headers row
     let csv = headers.map(h => escapeForCsv(h)).join(',') + '\r\n';
     
+    // Sort results by score in descending order
+    const sortedResults = [...results].sort((a, b) => {
+      // Default score to 0 if not present
+      const scoreA = typeof a.score === 'number' ? a.score : 0;
+      const scoreB = typeof b.score === 'number' ? b.score : 0;
+      return scoreB - scoreA;
+    });
+    
     // Add result rows
-    results.forEach(result => {
+    sortedResults.forEach(result => {
       const row = [
+        escapeForCsv(result.score !== undefined ? result.score : '0'),
         escapeForCsv(result.businessName || ''),
         escapeForCsv(result.address || ''),
         escapeForCsv(result.website || ''),
@@ -499,14 +509,19 @@ document.addEventListener('DOMContentLoaded', function() {
       resultItem.classList.add('cached-result');
     }
     
-    // Business name with website link
+    // Business name with website link (without score badge here)
+    const header = document.createElement('div');
+    header.className = 'result-header';
+    
+    // Business name with link
     const name = document.createElement('h3');
     if (result.website) {
       name.innerHTML = `<a href="${result.website}" target="_blank">${result.businessName}</a>`;
     } else {
       name.textContent = result.businessName;
     }
-    resultItem.appendChild(name);
+    header.appendChild(name);
+    resultItem.appendChild(header);
     
     // Address if available
     if (result.address) {
@@ -537,14 +552,80 @@ document.addEventListener('DOMContentLoaded', function() {
         keywords.innerHTML = '<strong>Found keywords:</strong> ' + result.jobKeywords.join(', ');
         resultItem.appendChild(keywords);
       }
+      
+      // Display job listings if available
+      if (result.jobListings && result.jobListings.length > 0) {
+        const jobListingsSection = document.createElement('div');
+        jobListingsSection.className = 'job-listings-section';
+        
+        const jobListingsHeader = document.createElement('p');
+        jobListingsHeader.innerHTML = `<strong>Found ${result.jobListings.length} relevant job(s):</strong>`;
+        jobListingsSection.appendChild(jobListingsHeader);
+        
+        const jobListingsList = document.createElement('ul');
+        jobListingsList.className = 'job-listings-list';
+        
+        result.jobListings.forEach(listing => {
+          const listingItem = document.createElement('li');
+          listingItem.className = 'job-listing-item';
+          
+          const listingTitle = document.createElement('div');
+          listingTitle.className = 'job-listing-title';
+          listingTitle.innerHTML = `<strong>${listing.title}</strong>`;
+          listingItem.appendChild(listingTitle);
+          
+          const listingSnippet = document.createElement('div');
+          listingSnippet.className = 'job-listing-snippet';
+          listingSnippet.textContent = listing.snippet;
+          listingItem.appendChild(listingSnippet);
+          
+          if (listing.keywords && listing.keywords.length > 0) {
+            const listingKeywords = document.createElement('div');
+            listingKeywords.className = 'job-listing-keywords';
+            listingKeywords.innerHTML = `<small>Matched keywords: ${listing.keywords.join(', ')}</small>`;
+            listingItem.appendChild(listingKeywords);
+          }
+          
+          jobListingsList.appendChild(listingItem);
+        });
+        
+        jobListingsSection.appendChild(jobListingsList);
+        resultItem.appendChild(jobListingsSection);
+      }
     }
     
+    // Create footer section with date and score
+    const resultFooter = document.createElement('div');
+    resultFooter.className = 'result-footer';
+    
+    // Create score badge
+    const scoreBadge = document.createElement('span');
+    scoreBadge.className = 'score-badge-small';
+    const score = typeof result.score === 'number' ? result.score : 0;
+    scoreBadge.textContent = `Score: ${score}`;
+    
+    // Set badge color based on score range
+    if (score >= 80) {
+      scoreBadge.classList.add('high-score');
+    } else if (score >= 50) {
+      scoreBadge.classList.add('medium-score');
+    } else if (score > 0) {
+      scoreBadge.classList.add('low-score');
+    } else {
+      scoreBadge.classList.add('no-score');
+    }
+    
+    // Add score badge and last checked date to footer
+    resultFooter.appendChild(scoreBadge);
+    
     if (result.lastChecked) {
-      const lastChecked = document.createElement('p');
+      const lastChecked = document.createElement('span');
       lastChecked.className = 'last-checked';
       lastChecked.innerHTML = '<small>Last checked: ' + new Date(result.lastChecked).toLocaleString() + '</small>';
-      resultItem.appendChild(lastChecked);
+      resultFooter.appendChild(lastChecked);
     }
+    
+    resultItem.appendChild(resultFooter);
     
     resultsList.appendChild(resultItem);
   }

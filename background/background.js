@@ -243,7 +243,8 @@ function processWebsiteWithTab(website, nextWebsiteIndex, searchData) {
             
             // If job keywords or contact info was found, add to results
             if ((result.jobKeywords && result.jobKeywords.length > 0) || 
-                result.contactEmail || result.contactPage) {
+                result.contactEmail || result.contactPage ||
+                (result.jobListings && result.jobListings.length > 0)) {
               const completeResult = {
                 businessName: website.businessName || "Unknown Business",
                 address: website.address || "",
@@ -251,6 +252,9 @@ function processWebsiteWithTab(website, nextWebsiteIndex, searchData) {
                 jobKeywords: result.jobKeywords || [],
                 contactEmail: result.contactEmail,
                 contactPage: result.contactPage,
+                jobPages: result.jobPages || [],
+                jobListings: result.jobListings || [],
+                score: result.score || 0,
                 lastChecked: result.lastChecked
               };
               
@@ -346,6 +350,9 @@ function searchForJobContent(website, searchData) {
     jobKeywords: [],
     contactEmail: null,
     contactPage: null,
+    jobPages: [],
+    jobListings: [],
+    score: 0, // Initialize score
     businessName: website.businessName || "Unknown Business" // Explicitly carry over the business name
   };
   
@@ -384,6 +391,7 @@ function searchForJobContent(website, searchData) {
       if (pageText.includes(term)) {
         if (!result.jobKeywords.includes(term)) {
           result.jobKeywords.push(term);
+          result.score += 5; // Add 5 points for each common job term found
         }
       }
     }
@@ -394,6 +402,7 @@ function searchForJobContent(website, searchData) {
       if (pageText.includes(keywordLower)) {
         if (!result.jobKeywords.includes(keyword)) {
           result.jobKeywords.push(keyword);
+          result.score += 20; // Add 20 points for each user keyword found on main page
         }
       }
     }
@@ -412,26 +421,186 @@ function searchForJobContent(website, searchData) {
       return hasJobText || hasJobPath;
     });
     
-    // If job links are found, get the first one as the careers/jobs page
+    // If job links are found, process them
     if (jobLinks.length > 0) {
-      const jobLink = jobLinks[0];
-      let href = jobLink.getAttribute('href');
+      // Found job links - add to score
+      result.score += 30; // Add 30 points for having job pages
       
-      // Make sure the URL is absolute
-      if (href && !href.startsWith('http')) {
-        // Handle relative URLs
-        if (href.startsWith('/')) {
-          const url = new URL(window.location.href);
-          href = `${url.protocol}//${url.host}${href}`;
-        } else {
-          // Handle relative to current path
-          const baseUrl = window.location.href.substring(0, window.location.href.lastIndexOf('/') + 1);
-          href = baseUrl + href;
+      // Process up to 3 job links to avoid excessive processing
+      const linksToProcess = jobLinks.slice(0, 3);
+      
+      for (const jobLink of linksToProcess) {
+        let href = jobLink.getAttribute('href');
+        const linkText = jobLink.textContent.trim();
+        
+        // Make sure the URL is absolute
+        if (href && !href.startsWith('http')) {
+          // Handle relative URLs
+          if (href.startsWith('/')) {
+            const url = new URL(window.location.href);
+            href = `${url.protocol}//${url.host}${href}`;
+          } else {
+            // Handle relative to current path
+            const baseUrl = window.location.href.substring(0, window.location.href.lastIndexOf('/') + 1);
+            href = baseUrl + href;
+          }
         }
-      }
-      
-      if (href) {
-        result.contactPage = href;
+        
+        if (href) {
+          // Add to job pages
+          result.jobPages.push({
+            url: href,
+            title: linkText || 'Job/Career Page'
+          });
+          
+          // If this is the first job link, set it as the contact page for backward compatibility
+          if (!result.contactPage) {
+            result.contactPage = href;
+          }
+          
+          // Visit the job page to search for specific keywords
+          try {
+            // Create an iframe to load the job page
+            const iframe = document.createElement('iframe');
+            iframe.style.display = 'none';
+            document.body.appendChild(iframe);
+            
+            // Use a promise to handle the iframe loading
+            const visitJobPage = new Promise((resolve, reject) => {
+              // Set a timeout for iframe loading (5 seconds)
+              const timeout = setTimeout(() => {
+                reject(new Error('Job page iframe loading timeout'));
+              }, 5000);
+              
+              iframe.onload = () => {
+                clearTimeout(timeout);
+                try {
+                  // Get content from the iframe
+                  const iframeDoc = iframe.contentDocument || iframe.contentWindow.document;
+                  if (iframeDoc) {
+                    const jobPageText = iframeDoc.body ? iframeDoc.body.textContent.toLowerCase() : '';
+                    
+                    // Extract job listings that contain the search keywords
+                    const jobElements = Array.from(iframeDoc.querySelectorAll('div, section, article, li'));
+                    
+                    // Filter for elements that might contain job listings
+                    const potentialJobListings = jobElements.filter(element => {
+                      const elementText = element.textContent.toLowerCase();
+                      // Check if element contains job-related terms
+                      const hasJobTerms = commonJobTerms.some(term => elementText.includes(term.toLowerCase()));
+                      // Check if element contains user keywords
+                      const hasUserKeywords = searchKeywords.some(keyword => 
+                        elementText.includes(keyword.toLowerCase())
+                      );
+                      
+                      return hasJobTerms && hasUserKeywords && elementText.length > 100;
+                    });
+                    
+                    let keywordsFoundOnJobPage = false;
+                    
+                    // Process potential job listings
+                    for (const listingElement of potentialJobListings.slice(0, 5)) { // Limit to 5 listings
+                      const listingText = listingElement.textContent.trim();
+                      
+                      // Find the most likely job title - look for h tags within or nearby
+                      let jobTitle = '';
+                      const headings = listingElement.querySelectorAll('h1, h2, h3, h4, h5, h6, strong');
+                      if (headings.length > 0) {
+                        jobTitle = headings[0].textContent.trim();
+                      }
+                      
+                      // If no heading found, try to extract a title based on common patterns
+                      if (!jobTitle) {
+                        const titleMatches = listingText.match(/(?:job|position|role|vacancy|opening):\s*([^\n\.]+)/i);
+                        if (titleMatches && titleMatches[1]) {
+                          jobTitle = titleMatches[1].trim();
+                        }
+                      }
+                      
+                      // Default title if nothing found
+                      if (!jobTitle) {
+                        jobTitle = 'Job Opening';
+                      }
+                      
+                      // Find matching keywords in this listing
+                      const matchedKeywords = searchKeywords.filter(keyword => 
+                        listingText.toLowerCase().includes(keyword.toLowerCase())
+                      );
+                      
+                      // Only add if it has matching keywords
+                      if (matchedKeywords.length > 0) {
+                        result.jobListings.push({
+                          title: jobTitle,
+                          snippet: listingText.substring(0, 200) + '...',
+                          keywords: matchedKeywords,
+                          source: href
+                        });
+                        
+                        // Perfect match - highest score (100)
+                        result.score = Math.max(result.score, 100);
+                        keywordsFoundOnJobPage = true;
+                      }
+                    }
+                    
+                    // Check if we found specific keywords in the job page, even if not in specific listings
+                    let keywordMatchCount = 0;
+                    for (const keyword of searchKeywords) {
+                      if (jobPageText.includes(keyword.toLowerCase())) {
+                        if (!result.jobKeywords.includes(keyword)) {
+                          result.jobKeywords.push(keyword);
+                          keywordMatchCount++;
+                        }
+                      }
+                    }
+                    
+                    // If we found keywords on job page but not in specific listings
+                    if (keywordMatchCount > 0 && !keywordsFoundOnJobPage) {
+                      // Score 50-80 based on number of keywords found
+                      const keywordBonus = Math.min(keywordMatchCount * 15, 30);
+                      result.score = Math.max(result.score, 50 + keywordBonus);
+                    }
+                  }
+                } catch (error) {
+                  console.error('Error processing iframe content:', error);
+                } finally {
+                  resolve();
+                }
+              };
+              
+              iframe.onerror = () => {
+                clearTimeout(timeout);
+                reject(new Error('Failed to load job page in iframe'));
+              };
+              
+              // Try to load the page in the iframe
+              try {
+                iframe.src = href;
+              } catch (e) {
+                clearTimeout(timeout);
+                reject(e);
+              }
+            });
+            
+            // Wait for the page visit to complete with a timeout
+            visitJobPage.catch(error => {
+              console.error('Error visiting job page:', error);
+            }).finally(() => {
+              // Clean up the iframe
+              try {
+                if (iframe && iframe.parentNode) {
+                  iframe.parentNode.removeChild(iframe);
+                }
+              } catch (e) {
+                console.error('Error removing iframe:', e);
+              }
+            });
+            
+            // Since iframe loading is async and we need to return synchronously,
+            // we won't wait for it to complete. The results will be partial.
+          } catch (error) {
+            console.error('Error setting up job page visit:', error);
+          }
+        }
       }
     }
     
@@ -444,6 +613,7 @@ function searchForJobContent(website, searchData) {
     if (emailMatches && emailMatches.length > 0) {
       // Use the first email found
       result.contactEmail = emailMatches[0];
+      result.score += 10; // Add 10 points for having contact email
     }
     
     // If no email found, look for a contact page
@@ -480,8 +650,15 @@ function searchForJobContent(website, searchData) {
         
         if (href) {
           result.contactPage = href;
+          result.score += 5; // Add 5 points for contact page
         }
       }
+    }
+    
+    // Ensure score is at least 1 if any job-related information was found
+    if (result.jobKeywords.length > 0 || result.jobListings.length > 0 || 
+        result.jobPages.length > 0) {
+      result.score = Math.max(result.score, 1);
     }
     
     return result;

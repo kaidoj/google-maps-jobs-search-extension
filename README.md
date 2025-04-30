@@ -13,6 +13,15 @@ Available on [Chrome Web Store](https://chromewebstore.google.com/detail/google-
 - Export results to CSV
 - Cache previously visited websites to improve performance
 
+## Scoring 
+
+* Perfect Match (Score 100): When a job listing on a career page contains the exact keywords the user searched for
+* Keyword Relevance (Score 50-80): Based on how many user keywords are found on job pages
+* Job Page Relevance (Score 30): Added when a website has dedicated job/career pages
+* User Keyword Matches (Score 20 per keyword): When user's keywords appear on the main page
+* Common Job Terms (Score 5 per term): For standard job-related terms found
+* Contact Information (Score 5-10): Additional points for having contact information
+
 ## Installation Instructions
 
 To install and run this extension in Chrome developer mode:
