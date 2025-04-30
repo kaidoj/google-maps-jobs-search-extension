@@ -1,0 +1,79 @@
+<!-- Settings page for configuring the extension -->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Settings - Hidden Job Search Helper</title>
+  <link rel="stylesheet" href="../css/popup.css">
+  <style>
+    /* Additional settings page specific styles */
+    body.settings-page {
+      padding: 16px;
+    }
+    
+    .toggle-wrapper {
+      display: flex;
+      align-items: center;
+      margin: 5px 0;
+    }
+    
+    .toggle-label {
+      margin-left: 8px;
+      font-size: 13px;
+    }
+    
+    .saved-message {
+      position: fixed;
+      bottom: 20px;
+      left: 50%;
+      transform: translateX(-50%);
+      background-color: #323232;
+      color: white;
+      padding: 10px 20px;
+      border-radius: 4px;
+      font-size: 14px;
+      box-shadow: 0 2px 4px rgba(0,0,0,0.2);
+      z-index: 1000;
+    }
+  </style>
+</head>
+<body class="settings-page">
+  <div class="header-container">
+    <h1>Settings</h1>
+    <button id="back-button" class="icon-button" title="Back to Search">
+      <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <line x1="19" y1="12" x2="5" y2="12"></line>
+        <polyline points="12 19 5 12 12 5"></polyline>
+      </svg>
+    </button>
+  </div>
+
+  <form id="settings-form">
+    <div class="form-group">
+      <label for="enable-cache">Save Previously Visited:</label>
+      <div class="toggle-wrapper">
+        <input type="checkbox" id="enable-cache" checked>
+        <span class="toggle-label">Speeds up future searches by remembering already visited websites</span>
+      </div>
+    </div>
+
+    <div class="form-group">
+      <label for="cache-time">Remember For (days):</label>
+      <input type="number" id="cache-time" min="1" max="365" value="7">
+      <p class="help-text">How long to remember previously visited websites</p>
+    </div>
+
+    <div id="cache-stats" class="hidden">
+      <p>Saved websites: <span id="cache-count">0</span></p>
+      <button id="clear-cache" class="secondary-button">Clear Saved Data</button>
+    </div>
+
+    <div class="form-group">
+      <button type="submit" class="primary-button">Save Settings</button>
+    </div>
+  </form>
+
+  <script src="settings.js"></script>
+</body>
+</html>

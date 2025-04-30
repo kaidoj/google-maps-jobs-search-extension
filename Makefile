@@ -31,6 +31,8 @@ help:
 # Chrome build
 .PHONY: build-chrome
 build-chrome:
+	@echo "Running Tests..."
+	@npm test
 	@echo "Building Chrome extension v$(VERSION)..."
 	@mkdir -p $(RELEASE_DIR)
 	@rm -f $(RELEASE_FILE)

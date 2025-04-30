@@ -294,7 +294,7 @@ function startBusinessSearch() {
   
   // Define phrases for different languages
   const languagePhrases = {
-    'fr': { inLocation: ' dans ', inCurrentArea: ' dans la zone actuelle' },
+    'fr': { inLocation: ' à ', inCurrentArea: ' dans la région actuelle' },
     'de': { inLocation: ' in ', inCurrentArea: ' im aktuellen Bereich' },
     'es': { inLocation: ' en ', inCurrentArea: ' en el área actual' },
     'it': { inLocation: ' a ', inCurrentArea: ' nell\'area corrente' },
@@ -338,13 +338,44 @@ function startBusinessSearch() {
   inLocationPhrase = phrases.inLocation;
   inCurrentAreaPhrase = phrases.inCurrentArea;
   
-  // Add appropriate location to query using the language-specific phrase
-  if (!searchData.location || searchData.location.trim() === '') {
-    // If no location specified, use language-specific "in current area" phrase
-    query += inCurrentAreaPhrase;
+  // Enhanced handling for French Google Maps
+  if (languageCode.toLowerCase() === 'fr') {
+    console.log('Using enhanced query format for French Google Maps');
+
+    if (!searchData.location || searchData.location.trim() === '') {
+        // If no location specified, use the current area phrase
+        query += inCurrentAreaPhrase;
+    } else {
+        // Try both formats: with and without the "à" preposition
+        const directQuery = `${query} ${searchData.location.trim()}`;
+        const prepositionQuery = `${query}${inLocationPhrase}${searchData.location.trim()}`;
+
+        // Use the direct query first, fallback to preposition query if needed
+        query = directQuery;
+        console.log('Constructed direct query:', query);
+
+        // Add a fallback mechanism to switch to preposition query if direct query fails
+        setTimeout(() => {
+            if (!searchInProgress) {
+                console.log('Fallback to preposition query:', prepositionQuery);
+                query = prepositionQuery;
+                findSearchBox()
+                    .then(searchBox => {
+                        searchBox.value = query;
+                        searchBox.dispatchEvent(new Event('input', { bubbles: true }));
+                        searchBox.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, bubbles: true }));
+                    })
+                    .catch(error => console.error('Error during fallback query:', error));
+            }
+        }, 5000); // Wait 5 seconds before attempting fallback
+    }
   } else {
-    // If location is specified, use language-specific "in [location]" phrase
-    query += `${inLocationPhrase}${searchData.location.trim()}`;
+    // Standard approach for other languages
+    if (!searchData.location || searchData.location.trim() === '') {
+        query += inCurrentAreaPhrase;
+    } else {
+        query += `${inLocationPhrase}${searchData.location.trim()}`;
+    }
   }
   
   console.log(`Search query in ${languageCode}: ${query}`);
@@ -385,7 +416,7 @@ function startBusinessSearch() {
 async function collectSearchResults() {
   updatePopupProgress('Collecting business results from Google Maps...', 20);
   
-  // Try different selectors for the results feed with fallbacks
+  // Try different selectors for the results feed with fallbacks - expanded for google.fr
   try {
     const resultsFeed = await waitForElementWithOptions([
       'div[role="feed"]', 
@@ -393,13 +424,22 @@ async function collectSearchResults() {
       '.section-result-content',
       '.section-scrollbox',
       '.lXJj5c',
-      'div.m6QErb[aria-label]', // Modern Google Maps layout
+      'div.m6QErb[aria-label]',
       'div[jsaction*="pane.resultspanel"]',
-      '.m6QErb div[role="region"]'
+      '.m6QErb div[role="region"]',
+      // Add more specific selectors for google.fr
+      'div.m6QErb',
+      'div.m6QErb div[role="region"]',
+      'div[jsaction*="mouseover"]',
+      'div[jsaction*="resultspanel"]',
+      // Broader fallback selectors
+      '.section-layout .section-scrollbox',
+      'div[data-test-id="result-list"]',
+      'div.section-layout.section-scrollbox'
     ], 8000);
     
     // Set the maximum number of scrolls to try (prevent infinite scrolling)
-    const MAX_SCROLL_ATTEMPTS = 10;
+    const MAX_SCROLL_ATTEMPTS = 15;
     let scrollAttempts = 0;
     let prevResultCount = 0;
     let resultItems = [];
@@ -408,9 +448,9 @@ async function collectSearchResults() {
     const maxResults = searchData.maxResults || 20;
     console.log(`Max results limit: ${maxResults}`);
     
-    // Function to get all result items from the feed
+    // Enhanced function to get all result items from the feed with more robust selectors
     function getResultItems(feed) {
-      // Try different selectors to find result items
+      // Try different selectors to find result items - enhanced for google.fr and other domains
       let items = feed.querySelectorAll('div[role="article"]');
       
       // Try alternative selectors if the first one didn't work
@@ -418,25 +458,47 @@ async function collectSearchResults() {
         items = feed.querySelectorAll('a[href^="https://www.google.com/maps/place"]');
       }
       
-      // One more fallback
+      // Try localized Google Maps URLs (for france and other countries)
       if (items.length === 0) {
-        items = feed.querySelectorAll('.bfdHYd');
+        items = feed.querySelectorAll('a[href*="/maps/place"]');
+      }
+      
+      // Look for clickable items with specific attributes
+      if (items.length === 0) {
+        items = feed.querySelectorAll('div[jsaction*="mousedown:place"]');
+      }
+      
+      // Look for elements with specific Google Maps classes
+      if (items.length === 0) {
+        items = feed.querySelectorAll('div.Nv2PK, div.bfdHYd, div.uMGCkf');
+      }
+      
+      // Look for result items with data-item-id
+      if (items.length === 0) {
+        items = feed.querySelectorAll('div[data-item-id]');
       }
       
       // Final fallback - try to find anything that looks like a result card
       if (items.length === 0) {
-        items = feed.querySelectorAll('div[jsaction*="mouseover"]');
+        items = feed.querySelectorAll('div[jsaction*="mouseover"], div[tabindex="0"][jsaction]');
       }
       
+      console.log(`Found ${items.length} potential result items using enhanced selectors`);
       return Array.from(items);
     }
+    
+    // Initialize tracking variables for fresh vs cached results
+    let processedItems = [];
+    let freshWebsiteCount = 0;
+    let skippedPreviouslyVisitedCount = 0;
+    let processedUrls = new Set();
     
     // Initial set of results
     resultItems = getResultItems(resultsFeed);
     
     // If no results found initially, stop the search
     if (resultItems.length === 0) {
-      updatePopupProgress('No businesses found in the current map view', 0);
+      updatePopupProgress('No businesses found in the current map view. Try adjusting your search.', 0);
       searchInProgress = false;
       return;
     }
@@ -444,64 +506,122 @@ async function collectSearchResults() {
     // Log initial results count
     prevResultCount = resultItems.length;
     console.log(`Initially found ${prevResultCount} business results`);
-    
-    // If we already have enough results, don't scroll
-    if (resultItems.length >= maxResults) {
-      console.log(`Already have ${resultItems.length} results, which is >= max limit of ${maxResults}. Stopping scrolling.`);
-      // Limit the result items to the max results
-      resultItems = resultItems.slice(0, maxResults);
-    } else {
-      // Scroll and collect more results until we have enough or can't find more
-      while (scrollAttempts < MAX_SCROLL_ATTEMPTS) {
-        if (resultItems.length >= maxResults) {
-          console.log(`Reached max results limit (${maxResults}). Stopping scrolling.`);
-          // Limit the result items to the max results
-          resultItems = resultItems.slice(0, maxResults);
+
+    // This is our main scrolling loop - we'll keep scrolling until we either:
+    // 1. Get enough fresh results
+    // 2. Reach the maximum scroll attempts
+    // 3. Detect we're at the end of available results
+    while (scrollAttempts < MAX_SCROLL_ATTEMPTS && freshWebsiteCount < maxResults) {
+      // Process current batch of items that haven't been processed yet
+      let startIndex = processedItems.length;
+      
+      // Only process new items that haven't been processed yet
+      for (let i = startIndex; i < resultItems.length; i++) {
+        if (freshWebsiteCount >= maxResults) {
           break;
         }
         
-        updatePopupProgress(`Loading more results (scroll attempt ${scrollAttempts + 1})...`, 20 + (scrollAttempts / MAX_SCROLL_ATTEMPTS * 5));
+        // Mark this item as processed
+        processedItems.push(resultItems[i]);
         
-        // Scroll the results feed to the bottom
-        resultsFeed.scrollTo({
-          top: resultsFeed.scrollHeight,
-          behavior: 'smooth'
-        });
+        const progress = 20 + ((processedItems.length / (resultItems.length + 10)) * 10);
+        updatePopupProgress(`Processing business ${processedItems.length}/${resultItems.length} (${freshWebsiteCount} collected)...`, progress);
         
-        // Wait for potential new results to load
-        await new Promise(resolve => setTimeout(resolve, 1500));
-        
-        // Get updated list of results
-        resultItems = getResultItems(resultsFeed);
-        
-        // If we didn't get any new results after scrolling, we can stop
-        if (resultItems.length <= prevResultCount) {
-          scrollAttempts++;
+        // Process the business item (click, extract info, etc)
+        try {
+          const businessInfo = await processBusinessItem(resultItems[i]);
           
-          // If we've tried a few times with no new results, assume we're at the end
-          if (scrollAttempts >= 3 && resultItems.length === prevResultCount) {
-            console.log('No new results after multiple scroll attempts, likely reached the end');
-            break;
+          // If we got valid business info
+          if (businessInfo) {
+            // Check if we already have this website in our queue or processed it
+            if (businessInfo.website) {
+              // Skip duplicate websites
+              if (processedUrls.has(businessInfo.website)) {
+                console.log(`Skipping duplicate URL: ${businessInfo.website}`);
+                continue;
+              }
+              
+              // Check if this website was previously visited/cached
+              const wasVisitedBefore = await checkUrlInPreviouslyVisited(businessInfo.website);
+              if (wasVisitedBefore) {
+                console.log(`Skipping ${businessInfo.businessName} - already visited before`);
+                skippedPreviouslyVisitedCount++;
+                processedUrls.add(businessInfo.website);
+                continue;
+              }
+              
+              // Add to processed URLs set
+              processedUrls.add(businessInfo.website);
+              
+              // Increment fresh website count
+              freshWebsiteCount++;
+            } else {
+              // Website without a URL is always considered fresh
+              freshWebsiteCount++;
+            }
+            
+            // Add to the website queue
+            websiteQueue.push(businessInfo);
+            console.log(`Added new business to queue: ${businessInfo.businessName}, Website: ${businessInfo.website || 'No website'}`);
           }
-        } else {
-          // Reset attempts counter if we got new results
-          scrollAttempts = 0;
-          console.log(`Found ${resultItems.length - prevResultCount} new results (total: ${resultItems.length})`);
-          prevResultCount = resultItems.length;
+        } catch (error) {
+          console.error('Error processing business:', error);
         }
+      }
+      
+      // Update progress info
+      console.log(`Progress: ${freshWebsiteCount}/${maxResults} fresh websites found, ${skippedPreviouslyVisitedCount} skipped (cached)`);
+      
+      // Check if we've found enough fresh results
+      if (freshWebsiteCount >= maxResults) {
+        console.log(`Reached target of ${maxResults} fresh websites. Stopping collection.`);
+        break;
+      }
+      
+      // If we haven't reached our target, scroll to get more results
+      updatePopupProgress(`Found ${freshWebsiteCount}/${maxResults} fresh websites. Scrolling to load more results...`, 25);
+      
+      // Scroll down to load more results
+      resultsFeed.scrollTo({
+        top: resultsFeed.scrollHeight,
+        behavior: 'smooth'
+      });
+      
+      // Wait for potential new results to load
+      await new Promise(resolve => setTimeout(resolve, 1500));
+      
+      // Get updated list of results
+      const newResultItems = getResultItems(resultsFeed);
+      
+      // If we didn't get any new results after scrolling
+      if (newResultItems.length <= resultItems.length) {
+        scrollAttempts++;
+        
+        // If we've tried multiple times with no new results, we're likely at the end
+        if (scrollAttempts >= 3 && newResultItems.length === resultItems.length) {
+          console.log(`No new results after ${scrollAttempts} scroll attempts, likely reached the end`);
+          break;
+        }
+      } else {
+        // We got new results, reset scroll attempts counter
+        scrollAttempts = 0;
+        console.log(`Found ${newResultItems.length - resultItems.length} new results (total: ${newResultItems.length})`);
+        
+        // Update our results array with the new items
+        resultItems = newResultItems;
       }
     }
     
-    // Ensure we don't process more than the max results limit
-    if (resultItems.length > maxResults) {
-      console.log(`Limiting results to max ${maxResults} (found ${resultItems.length})`);
-      resultItems = resultItems.slice(0, maxResults);
+    // Log final counts
+    updatePopupProgress(`Finished collecting ${freshWebsiteCount} businesses (${skippedPreviouslyVisitedCount} skipped from cache)`, 30);
+    
+    // If we didn't find enough fresh results but exhausted all available results
+    if (freshWebsiteCount < maxResults) {
+      console.log(`Could only find ${freshWebsiteCount} fresh results out of target ${maxResults}`);
     }
     
-    updatePopupProgress(`Found ${resultItems.length} businesses. Processing...`, 25);
-    
-    // Process each result item to get business info
-    await processResultItems(resultItems);
+    // Start processing websites
+    processWebsiteQueue();
     
   } catch (error) {
     updatePopupProgress(`Error collecting search results: ${error.message}`, 0);
@@ -509,254 +629,243 @@ async function collectSearchResults() {
   }
 }
 
-// Process each result item to extract business information
-async function processResultItems(resultItems) {
-  updatePopupProgress(`Processing ${resultItems.length} businesses...`, 30);
-  
-  // Set to track URLs we've already processed to avoid duplicates
-  const processedUrls = new Set();
-  
-  for (let i = 0; i < resultItems.length; i++) {
-    const progress = 30 + (i / resultItems.length) * 20;
-    updatePopupProgress(`Processing business ${i+1} of ${resultItems.length}...`, progress);
+// Function to process a single business item from the results list
+async function processBusinessItem(resultItem) {
+  try {
+    console.log('Processing business item:', resultItem);
     
-    try {
-      // Store current URL and document title before clicking
-      const originalUrl = window.location.href;
-      const originalTitle = document.title;
-      
-      console.log(`Processing business ${i+1}: About to click result`);
-      
-      // IMPORTANT: Use a more controlled approach to open business details
-      // Instead of directly clicking the element (which might navigate to a new URL)
-      // We'll try to use Google Maps internal navigation mechanisms
-      
-      // 1. First try - use event listeners to intercept default navigation
-      let clickHandled = false;
-      const preventNavigation = (event) => {
-        event.preventDefault();
-        event.stopPropagation();
-        console.log('Prevented default navigation behavior');
-        clickHandled = true;
-      };
-      
-      // Add temporary event listeners to prevent navigation
-      window.addEventListener('beforeunload', preventNavigation, true);
-      
-      // Check if this is a place link we can parse
-      const placeLink = resultItems[i].getAttribute('href') || '';
-      if (placeLink.includes('/maps/place/')) {
-        // Parse place ID from the URL if possible
-        try {
-          const placeIdMatch = placeLink.match(/!1s([^!]+)/);
-          if (placeIdMatch && placeIdMatch[1]) {
-            const placeId = placeIdMatch[1];
-            console.log(`Found place ID: ${placeId}, using alternative navigation method`);
-            
-            // Try to find the place card without navigating
-            resultItems[i].focus();
-            
-            // Simulate click but on mousedown/mouseup instead of click event
-            resultItems[i].dispatchEvent(new MouseEvent('mousedown', {bubbles: true}));
-            resultItems[i].dispatchEvent(new MouseEvent('mouseup', {bubbles: true}));
-            
-            // Instead of click, which might cause navigation
-            await new Promise(resolve => setTimeout(resolve, 1000));
-          }
-        } catch (e) {
-          console.error('Error parsing place ID:', e);
-        }
-      }
-      
-      // If we couldn't handle it with place ID, try normal click but carefully
-      if (!clickHandled) {
-        console.log('Using standard click with navigation safeguards');
-        // Click the result directly, while still preventing page reload
-        resultItems[i].click();
-      }
-      
-      // Remove the navigation prevention handler
-      window.removeEventListener('beforeunload', preventNavigation, true);
-      
-      // Wait for the business details to load
-      await new Promise(resolve => setTimeout(resolve, 1500));
-      
-      // Check if we navigated to a new page unexpectedly
-      const urlChanged = window.location.href !== originalUrl;
-      const titleChanged = document.title !== originalTitle;
-      
-      if (urlChanged) {
-        console.warn(`URL changed unexpectedly: ${originalUrl} → ${window.location.href}`);
-        
-        // Save state in case we need to recover
-        sessionStorage.setItem('gmjs_search_in_progress', 'true');
-        sessionStorage.setItem('gmjs_websiteQueue', JSON.stringify(websiteQueue));
-        sessionStorage.setItem('gmjs_searchData', JSON.stringify(searchData));
-        sessionStorage.setItem('gmjs_currentIndex', i.toString());
-      }
-      
-      // Extract business information even if URL changed
-      const businessInfo = await extractBusinessInfo();
-      
-      if (businessInfo) {
-        // Check if we already have a business with this URL in our queue
-        if (businessInfo.website) {
-          if (processedUrls.has(businessInfo.website)) {
-            console.log(`Skipping duplicate URL: ${businessInfo.website}`);
-            continue; // Skip adding this duplicate to the queue
-          }
+    // Store current URL and document title before clicking
+    const originalUrl = window.location.href;
+    const originalTitle = document.title;
+    
+    // Enhanced approach for Google Maps - first try to determine if this is an interactive element
+    const isClickable = resultItem.hasAttribute('jsaction') || 
+                       resultItem.hasAttribute('role') || 
+                       resultItem.tagName === 'A' ||
+                       resultItem.querySelector('a') !== null;
+                       
+    console.log(`Element appears to be clickable: ${isClickable}`);
+    
+    // 1. First try - use event listeners to intercept default navigation
+    let clickHandled = false;
+    const preventNavigation = (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      console.log('Prevented default navigation behavior');
+      clickHandled = true;
+    };
+    
+    // Add temporary event listeners to prevent navigation
+    window.addEventListener('beforeunload', preventNavigation, true);
+    
+    // Check if this is a place link we can parse
+    const placeLink = resultItem.getAttribute('href') || resultItem.querySelector('a')?.getAttribute('href') || '';
+    if (placeLink.includes('/maps/place/')) {
+      // Parse place ID from the URL if possible
+      try {
+        const placeIdMatch = placeLink.match(/!1s([^!]+)/) || placeLink.match(/place\/([^\/]+)/);
+        if (placeIdMatch && placeIdMatch[1]) {
+          const placeId = placeIdMatch[1];
+          console.log(`Found place ID: ${placeId}, using alternative navigation method`);
           
-          // Add to our set of processed URLs
-          processedUrls.add(businessInfo.website);
+          // Try to find the place card without navigating
+          resultItem.focus();
+          
+          // Simulate click but on mousedown/mouseup instead of click event
+          resultItem.dispatchEvent(new MouseEvent('mousedown', {bubbles: true}));
+          resultItem.dispatchEvent(new MouseEvent('mouseup', {bubbles: true}));
+          
+          // Instead of click, which might cause navigation
+          await new Promise(resolve => setTimeout(resolve, 1000));
         }
-        
-        // Add to the website queue
-        websiteQueue.push(businessInfo);
-        console.log(`Added business to queue: ${businessInfo.businessName}, URL: ${businessInfo.website || 'No website'}`);
+      } catch (e) {
+        console.error('Error parsing place ID:', e);
       }
+    }
+    
+    // If we couldn't handle it with place ID, try normal click but carefully
+    if (!clickHandled) {
+      console.log('Using standard click with navigation safeguards');
       
-      // Navigate back based on multiple strategies
-      let navigatedBack = false;
+      // For non-anchor elements, try to find and click any anchor inside
+      const anchor = resultItem.tagName === 'A' ? resultItem : resultItem.querySelector('a');
       
-      // If the URL changed (full page navigation happened)
-      if (urlChanged) {
-        // Try to restore the original URL using pushState
-        try {
-          console.log('Attempting to restore original URL using pushState');
-          window.history.pushState({}, '', originalUrl);
+      if (anchor) {
+        console.log('Found anchor element to click');
+        anchor.click();
+      } else {
+        // If no anchor found, click the original element
+        resultItem.click();
+      }
+    }
+    
+    // Remove the navigation prevention handler
+    window.removeEventListener('beforeunload', preventNavigation, true);
+    
+    // Wait for the business details to load - increased timeout for google.fr
+    await new Promise(resolve => setTimeout(resolve, 2000));
+    
+    // Check if we navigated to a new page unexpectedly
+    const urlChanged = window.location.href !== originalUrl;
+    const titleChanged = document.title !== originalTitle;
+    
+    if (urlChanged) {
+      console.warn(`URL changed unexpectedly: ${originalUrl} → ${window.location.href}`);
+      
+      // Save state in case we need to recover
+      sessionStorage.setItem('gmjs_search_in_progress', 'true');
+      sessionStorage.setItem('gmjs_websiteQueue', JSON.stringify(websiteQueue));
+      sessionStorage.setItem('gmjs_searchData', JSON.stringify(searchData));
+    }
+    
+    // Extract business information even if URL changed
+    const businessInfo = await extractBusinessInfo();
+    
+    // Log business details found
+    if (businessInfo) {
+      console.log(`Extracted business info: Name=${businessInfo.businessName}, Website=${businessInfo.website || 'none'}`);
+    } else {
+      console.warn('Failed to extract business information');
+    }
+    
+    // Navigate back based on multiple strategies
+    let navigatedBack = false;
+    
+    // If the URL changed (full page navigation happened)
+    if (urlChanged) {
+      // Try to restore the original URL using pushState
+      try {
+        console.log('Attempting to restore original URL using pushState');
+        window.history.pushState({}, '', originalUrl);
+        await new Promise(resolve => setTimeout(resolve, 800));
+        
+        // Check if we're back to search results
+        const resultsVisible = !!(document.querySelector('div[role="feed"]') || 
+                                 document.querySelector('div[role="list"]'));
+        
+        if (resultsVisible) {
+          console.log('Successfully restored to search results via pushState');
+          navigatedBack = true;
+        } else {
+          // If pushState didn't get us back to results, use history.back() cautiously
+          console.log('pushState didn\'t restore results view, trying history.back()');
+          history.back();
+          await new Promise(resolve => setTimeout(resolve, 1000));
+          
+          // Check again if we have results
+          const resultsVisibleAfterBack = !!(document.querySelector('div[role="feed"]') || 
+                                           document.querySelector('div[role="list"]'));
+          
+          if (resultsVisibleAfterBack) {
+            console.log('Successfully navigated back via history.back()');
+            navigatedBack = true;
+          }
+        }
+      } catch (e) {
+        console.error('Error navigating with history:', e);
+      }
+    } else {
+      // URL didn't change, so we're dealing with a panel overlay
+      // Try closing the panel instead of navigating back
+      
+      // 1. Try different selectors for back buttons
+      const backButtonSelectors = [
+        'button[aria-label="Back"]',
+        'button[jsaction*="back"]',
+        'button.hYBOP',
+        'button[aria-label="Back to results"]',
+        'button[aria-label="Back to search results"]',
+        'button[data-tooltip="Back"]',
+        'button.VfPpkd-icon-button',
+        'button.searchbox-button.searchbox-back',
+        'button[jsaction*="backclick"]',
+        'button.DVeyrd',
+        'button[data-tooltip*="back" i]',
+        'button[jsaction="pane.backButtonClicked"]'
+      ];
+      
+      for (const selector of backButtonSelectors) {
+        const backButton = document.querySelector(selector);
+        if (backButton) {
+          console.log(`Found back button with selector: ${selector}`);
+          backButton.click();
           await new Promise(resolve => setTimeout(resolve, 800));
           
-          // Check if we're back to search results
-          const resultsVisible = !!(document.querySelector('div[role="feed"]') || 
-                                   document.querySelector('div[role="list"]'));
-          
-          if (resultsVisible) {
-            console.log('Successfully restored to search results via pushState');
+          // Check if we successfully navigated back by checking if results list is visible
+          if (document.querySelector('div[role="feed"]') || document.querySelector('div[role="list"]')) {
             navigatedBack = true;
-          } else {
-            // If pushState didn't get us back to results, use history.back() cautiously
-            console.log('pushState didn\'t restore results view, trying history.back()');
-            history.back();
-            await new Promise(resolve => setTimeout(resolve, 1000));
-            
-            // Check again if we have results
-            const resultsVisibleAfterBack = !!(document.querySelector('div[role="feed"]') || 
-                                             document.querySelector('div[role="list"]'));
-            
-            if (resultsVisibleAfterBack) {
-              console.log('Successfully navigated back via history.back()');
-              navigatedBack = true;
-            }
+            console.log('Successfully navigated back via back button');
+            break;
           }
-        } catch (e) {
-          console.error('Error navigating with history:', e);
         }
-      } else {
-        // URL didn't change, so we're dealing with a panel overlay
-        // Try closing the panel instead of navigating back
-        
-        // 1. Try different selectors for back buttons
-        const backButtonSelectors = [
-          'button[aria-label="Back"]',
-          'button[jsaction*="back"]',
-          'button.hYBOP',
-          'button[aria-label="Back to results"]',
-          'button[aria-label="Back to search results"]',
-          'button[data-tooltip="Back"]',
-          'button.VfPpkd-icon-button',
-          'button.searchbox-button.searchbox-back',
-          'button[jsaction*="backclick"]',
-          'button.DVeyrd',
-          'button[data-tooltip*="back" i]',
-          'button[jsaction="pane.backButtonClicked"]'
+      }
+      
+      // 2. If back button didn't work, try closing the panel
+      if (!navigatedBack) {
+        const closeButtonSelectors = [
+          'button[aria-label="Close"]',
+          'button[jsaction*="close"]',
+          'button[data-tooltip="Close"]',
+          'img.iRxY3GoUYUY__close',
+          'button[jsaction="pane.dismiss"]',
+          '.IPwzOs-icon-common[aria-label="Close"]',
+          'button.VfPpkd-icon-button[data-tooltip="Close"]'
         ];
         
-        for (const selector of backButtonSelectors) {
-          const backButton = document.querySelector(selector);
-          if (backButton) {
-            console.log(`Found back button with selector: ${selector}`);
-            backButton.click();
+        for (const selector of closeButtonSelectors) {
+          const closeButton = document.querySelector(selector);
+          if (closeButton) {
+            console.log(`Found close button with selector: ${selector}`);
+            closeButton.click();
             await new Promise(resolve => setTimeout(resolve, 800));
             
-            // Check if we successfully navigated back by checking if results list is visible
+            // Check if we successfully navigated back
             if (document.querySelector('div[role="feed"]') || document.querySelector('div[role="list"]')) {
               navigatedBack = true;
-              console.log('Successfully navigated back via back button');
+              console.log('Successfully navigated back via close button');
               break;
             }
           }
         }
-        
-        // 2. If back button didn't work, try closing the panel
-        if (!navigatedBack) {
-          const closeButtonSelectors = [
-            'button[aria-label="Close"]',
-            'button[jsaction*="close"]',
-            'button[data-tooltip="Close"]',
-            'img.iRxY3GoUYUY__close',
-            'button[jsaction="pane.dismiss"]',
-            '.IPwzOs-icon-common[aria-label="Close"]',
-            'button.VfPpkd-icon-button[data-tooltip="Close"]'
-          ];
-          
-          for (const selector of closeButtonSelectors) {
-            const closeButton = document.querySelector(selector);
-            if (closeButton) {
-              console.log(`Found close button with selector: ${selector}`);
-              closeButton.click();
-              await new Promise(resolve => setTimeout(resolve, 800));
-              
-              // Check if we successfully navigated back
-              if (document.querySelector('div[role="feed"]') || document.querySelector('div[role="list"]')) {
-                navigatedBack = true;
-                console.log('Successfully navigated back via close button');
-                break;
-              }
-            }
-          }
-        }
       }
-      
-      // If we still haven't navigated back successfully, look for the results feed
-      if (!navigatedBack) {
-        const resultsFeed = document.querySelector('div[role="feed"]') || document.querySelector('div[role="list"]');
-        if (resultsFeed) {
-          console.log('Found results feed without navigation, continuing...');
-          navigatedBack = true;
-        } else {
-          console.warn('Failed to return to results view. Trying to recover...');
-          
-          // Try the Google Maps logo as a last resort
-          const homeButtons = document.querySelectorAll('a[aria-label="Google Maps"], a.google-maps-link');
-          if (homeButtons.length > 0) {
-            console.log('Clicking Google Maps logo to reset view');
-            homeButtons[0].click();
-            await new Promise(resolve => setTimeout(resolve, 1200));
-            
-            // If we clicked home, we need to re-execute the search
-            if (searchData) {
-              console.log('Re-executing search after clicking home button');
-              startBusinessSearch();
-              
-              // Wait for search to complete and results to load
-              await new Promise(resolve => setTimeout(resolve, 3000));
-              
-              // Indicate that this iteration failed but we're continuing
-              console.log('Search re-executed, but this business was skipped');
-            }
-          }
-        }
-      }
-    } catch (error) {
-      console.error('Error processing business:', error);
     }
+    
+    // If we still haven't navigated back successfully, look for the results feed
+    if (!navigatedBack) {
+      const resultsFeed = document.querySelector('div[role="feed"]') || document.querySelector('div[role="list"]');
+      if (resultsFeed) {
+        console.log('Found results feed without navigation, continuing...');
+        navigatedBack = true;
+      } else {
+        console.warn('Failed to return to results view. Trying to recover...');
+        
+        // Try the Google Maps logo as a last resort
+        const homeButtons = document.querySelectorAll('a[aria-label="Google Maps"], a.google-maps-link');
+        if (homeButtons.length > 0) {
+          console.log('Clicking Google Maps logo to reset view');
+          homeButtons[0].click();
+          await new Promise(resolve => setTimeout(resolve, 1200));
+          
+          // If we clicked home, we need to re-execute the search
+          if (searchData) {
+            console.log('Re-executing search after clicking home button');
+            startBusinessSearch();
+            
+            // Wait for search to complete and results to load
+            await new Promise(resolve => setTimeout(resolve, 3000));
+            
+            // Indicate that this iteration failed but we're continuing
+            console.log('Search re-executed, but this business was skipped');
+          }
+        }
+      }
+    }
+    
+    return businessInfo;
+  } catch (error) {
+    console.error('Error processing business item:', error);
+    return null;
   }
-  
-  // Log the number of businesses added to the queue
-  console.log(`Added ${websiteQueue.length} businesses to the processing queue`);
-  
-  // Start processing websites
-  processWebsiteQueue();
 }
 
 // Extract business information from the details panel
@@ -813,18 +922,6 @@ async function extractBusinessInfo() {
       for (let i = 0; i < 6; i++) { // Limit ancestor search depth
         if (!element || !element.parentElement) break;
         
-        element = element.parentElement;
-        
-        // Check if this parent is one of our container types
-        const isContainer = containerSelectors.some(selector => {
-          return element.matches && element.matches(selector);
-        });
-        
-        if (isContainer) {
-          container = element;
-          console.log('Found container containing website element');
-          break;
-        }
       }
       
       // If we didn't find a specific container, use the main details panel as container
@@ -1013,33 +1110,51 @@ function cleanAddress(address) {
   return cleanedAddress;
 }
 
-// Process the queue of websites to search for job listings
-function processWebsiteQueue() {
-  const totalWebsites = websiteQueue.length;
+// Process each result item to extract business information
+async function processResultItems(resultItems, maxResults) {
+  updatePopupProgress(`Processing ${resultItems.length} businesses...`, 30);
   
-  if (totalWebsites === 0) {
-    updatePopupProgress('No websites found to process', 50);
-    finishSearch();
-    return;
+  // Set to track URLs we've already processed to avoid duplicates
+  const processedUrls = new Set();
+  
+  // Counter for new websites (websites requiring fresh processing)
+  let freshWebsiteCount = 0;
+  
+  // Process each result item
+  for (const item of resultItems) {
+    // Extract business information
+    const businessInfo = await extractBusinessInfo(item);
+    
+    // If we got valid business info
+    if (businessInfo && businessInfo.website) {
+      // Check if we already processed this URL
+      if (!processedUrls.has(businessInfo.website)) {
+        // Add to processed URLs set
+        processedUrls.add(businessInfo.website);
+        
+        // Increment fresh website count
+        freshWebsiteCount++;
+        
+        // Add to the website queue
+        websiteQueue.push(businessInfo);
+        console.log(`Added new business to queue: ${businessInfo.businessName}, Website: ${businessInfo.website}`);
+      } else {
+        console.log(`Skipping duplicate business: ${businessInfo.businessName}, Website: ${businessInfo.website}`);
+      }
+    }
+    
+    // Update progress
+    updatePopupProgress(`Processed ${freshWebsiteCount} businesses...`, 30 + (freshWebsiteCount / maxResults) * 50);
+    
+    // Check if we've reached the maxResults limit
+    if (freshWebsiteCount >= maxResults) {
+      console.log(`Reached target of ${maxResults} fresh websites. Stopping collection.`);
+      break;
+    }
   }
   
-  updatePopupProgress(`Starting to process ${totalWebsites} websites for job listings...`, 50);
-  
-  // Send message to background script to process websites
-  chrome.runtime.sendMessage({
-    action: 'processWebsites',
-    data: {
-      websites: websiteQueue,
-      searchData: searchData
-    }
-  }, response => {
-    if (chrome.runtime.lastError) {
-      updatePopupProgress(`Error: ${chrome.runtime.lastError.message}`, 50);
-      finishSearch();
-    } else if (response && response.status === 'processing') {
-      updatePopupProgress('Websites are being processed in the background...', 55);
-    }
-  });
+  // Finalize the search process
+  finishSearch();
 }
 
 // Utility function to wait for an element to appear in the DOM
@@ -1276,14 +1391,38 @@ async function resetGoogleMapsState() {
 function cancelSearch() {
   console.log('Cancelling ongoing search');
   
-  // Reset the search flag
+  // Reset the search flag immediately to stop any ongoing processes
   searchInProgress = false;
+  
+  // Clear all search-related timers to stop any scheduled operations
+  // This will stop any pending setTimeout operations for scrolling, clicking, etc.
+  const highestTimeoutId = setTimeout(() => {}, 0);
+  for (let i = 0; i < highestTimeoutId; i++) {
+    clearTimeout(i);
+  }
   
   // Reset other search-related variables
   searchData = null;
   searchResults = [];
   currentResultIndex = 0;
   websiteQueue = [];
+  
+  // Send message to background script to cancel any ongoing processes
+  chrome.runtime.sendMessage({
+    action: 'cancelSearch'
+  }, response => {
+    console.log('Background script notified of search cancellation:', response);
+  });
+  
+  // Clear any stored search state from session storage
+  try {
+    sessionStorage.removeItem('gmjs_search_in_progress');
+    sessionStorage.removeItem('gmjs_websiteQueue');
+    sessionStorage.removeItem('gmjs_searchData');
+    sessionStorage.removeItem('gmjs_currentIndex');
+  } catch (e) {
+    console.error('Error clearing session storage:', e);
+  }
   
   // Try to go back to the main Google Maps view to clean up any search state
   try {
@@ -1302,10 +1441,124 @@ function cancelSearch() {
         break;
       }
     }
+    
+    // Force close any open business details panels
+    const closeButtonSelectors = [
+      'button[aria-label="Close"]',
+      'button[jsaction*="close"]',
+      'button[data-tooltip="Close"]',
+      'img.iRxY3GoUYUY__close',
+      'button[jsaction="pane.dismiss"]',
+      '.IPwzOs-icon-common[aria-label="Close"]',
+      'button.VfPpkd-icon-button[data-tooltip="Close"]'
+    ];
+    
+    for (const selector of closeButtonSelectors) {
+      const closeButton = document.querySelector(selector);
+      if (closeButton) {
+        closeButton.click();
+      }
+    }
+    
+    // Force click any back buttons to get to the main view
+    const backButtonSelectors = [
+      'button[aria-label="Back"]',
+      'button[jsaction*="back"]',
+      'button.hYBOP',
+      'button[aria-label="Back to results"]',
+      'button[aria-label="Back to search results"]',
+      'button[data-tooltip="Back"]',
+      'button.VfPpkd-icon-button',
+      'button.searchbox-button.searchbox-back',
+      'button[jsaction*="backclick"]',
+      'button.DVeyrd'
+    ];
+    
+    for (const selector of backButtonSelectors) {
+      const backButton = document.querySelector(selector);
+      if (backButton) {
+        backButton.click();
+      }
+    }
   } catch (e) {
     console.error('Error resetting Google Maps view:', e);
   }
+  
+  // Update progress to inform user that search was cancelled
+  updatePopupProgress('Search cancelled', 0);
+}
+
+// Process the queue of websites to search for job listings
+function processWebsiteQueue() {
+  const totalWebsites = websiteQueue.length;
+  
+  if (totalWebsites === 0) {
+    updatePopupProgress('No websites found to process', 50);
+    finishSearch();
+    return;
+  }
+  
+  updatePopupProgress(`Starting to process ${totalWebsites} websites for job listings...`, 50);
+  
+  // Send message to background script to process websites
+  chrome.runtime.sendMessage({
+    action: 'processWebsites',
+    data: {
+      websites: websiteQueue,
+      searchData: searchData
+    }
+  }, response => {
+    if (chrome.runtime.lastError) {
+      updatePopupProgress(`Error: ${chrome.runtime.lastError.message}`, 50);
+      finishSearch();
+    } else if (response && response.status === 'processing') {
+      updatePopupProgress('Websites are being processed in the background...', 55);
+    }
+  });
 }
 
 // Initialize the content script
 initialize();
+
+// Function to check if a URL was previously visited and saved
+async function checkUrlInPreviouslyVisited(url) {
+  return new Promise((resolve) => {
+    // First check if saving previously visited sites is enabled
+    chrome.storage.local.get(['enableCache', 'cacheTime'], function(settings) {
+      const savePreviouslyVisited = settings.enableCache !== false; // Default to true if not set
+      
+      // If saving previously visited sites is disabled, resolve with null
+      if (!savePreviouslyVisited) {
+        resolve(null);
+        return;
+      }
+      
+      const rememberDays = settings.cacheTime || 7; // Default to 7 days if not set
+      const dataKey = 'cached_' + btoa(url); // Base64 encode the URL as the key
+      
+      // Check for saved data
+      chrome.storage.local.get([dataKey], function(data) {
+        if (data[dataKey]) {
+          const savedData = data[dataKey];
+          const now = new Date().getTime();
+          const expirationTime = savedData.timestamp + (rememberDays * 24 * 60 * 60 * 1000); // Convert days to milliseconds
+          
+          // Check if saved data is still valid
+          if (now < expirationTime) {
+            // Data is valid, return it
+            resolve(savedData.data);
+          } else {
+            // Data is expired, remove it
+            chrome.storage.local.remove([dataKey], function() {
+              console.log('Removed expired saved data for:', url);
+              resolve(null);
+            });
+          }
+        } else {
+          // No saved data found
+          resolve(null);
+        }
+      });
+    });
+  });
+}
