@@ -1488,6 +1488,35 @@ function cancelSearch() {
   updatePopupProgress('Search cancelled', 0);
 }
 
+// Process the queue of websites to search for job listings
+function processWebsiteQueue() {
+  const totalWebsites = websiteQueue.length;
+  
+  if (totalWebsites === 0) {
+    updatePopupProgress('No websites found to process', 50);
+    finishSearch();
+    return;
+  }
+  
+  updatePopupProgress(`Starting to process ${totalWebsites} websites for job listings...`, 50);
+  
+  // Send message to background script to process websites
+  chrome.runtime.sendMessage({
+    action: 'processWebsites',
+    data: {
+      websites: websiteQueue,
+      searchData: searchData
+    }
+  }, response => {
+    if (chrome.runtime.lastError) {
+      updatePopupProgress(`Error: ${chrome.runtime.lastError.message}`, 50);
+      finishSearch();
+    } else if (response && response.status === 'processing') {
+      updatePopupProgress('Websites are being processed in the background...', 55);
+    }
+  });
+}
+
 // Initialize the content script
 initialize();
 
