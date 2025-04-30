@@ -34,8 +34,8 @@ document.addEventListener('DOMContentLoaded', function() {
       // Set enable save previously visited checkbox (default to true if not set)
       enableCacheCheckbox.checked = data.enableCache !== false;
       
-      // Set remember for days input (default to 30 days if not set)
-      cacheTimeInput.value = data.cacheTime || 30;
+      // Set remember for days input (default to 7 days if not set)
+      cacheTimeInput.value = data.cacheTime || 7;
     });
   }
   

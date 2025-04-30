@@ -1703,7 +1703,7 @@ async function checkUrlInPreviouslyVisited(url) {
         return;
       }
       
-      const rememberDays = settings.cacheTime || 30; // Default to 30 days if not set
+      const rememberDays = settings.cacheTime || 7; // Default to 7 days if not set
       const dataKey = 'cached_' + btoa(url); // Base64 encode the URL as the key
       
       // Check for saved data
