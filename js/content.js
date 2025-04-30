@@ -1058,7 +1058,7 @@ async function processResultItems(resultItems, maxResults) {
         }
       }
     } catch (error) {
-      console.error('Error processing business:', error);
+      console.error('Error processing business item:', error);
     }
   }
   
@@ -1590,8 +1590,15 @@ async function resetGoogleMapsState() {
 function cancelSearch() {
   console.log('Cancelling ongoing search');
   
-  // Reset the search flag
+  // Reset the search flag immediately to stop any ongoing processes
   searchInProgress = false;
+  
+  // Clear all search-related timers to stop any scheduled operations
+  // This will stop any pending setTimeout operations for scrolling, clicking, etc.
+  const highestTimeoutId = setTimeout(() => {}, 0);
+  for (let i = 0; i < highestTimeoutId; i++) {
+    clearTimeout(i);
+  }
   
   // Reset other search-related variables
   searchData = null;
@@ -1631,6 +1638,45 @@ function cancelSearch() {
       if (homeButton) {
         homeButton.click();
         break;
+      }
+    }
+    
+    // Force close any open business details panels
+    const closeButtonSelectors = [
+      'button[aria-label="Close"]',
+      'button[jsaction*="close"]',
+      'button[data-tooltip="Close"]',
+      'img.iRxY3GoUYUY__close',
+      'button[jsaction="pane.dismiss"]',
+      '.IPwzOs-icon-common[aria-label="Close"]',
+      'button.VfPpkd-icon-button[data-tooltip="Close"]'
+    ];
+    
+    for (const selector of closeButtonSelectors) {
+      const closeButton = document.querySelector(selector);
+      if (closeButton) {
+        closeButton.click();
+      }
+    }
+    
+    // Force click any back buttons to get to the main view
+    const backButtonSelectors = [
+      'button[aria-label="Back"]',
+      'button[jsaction*="back"]',
+      'button.hYBOP',
+      'button[aria-label="Back to results"]',
+      'button[aria-label="Back to search results"]',
+      'button[data-tooltip="Back"]',
+      'button.VfPpkd-icon-button',
+      'button.searchbox-button.searchbox-back',
+      'button[jsaction*="backclick"]',
+      'button.DVeyrd'
+    ];
+    
+    for (const selector of backButtonSelectors) {
+      const backButton = document.querySelector(selector);
+      if (backButton) {
+        backButton.click();
       }
     }
   } catch (e) {

@@ -299,6 +299,16 @@ button:disabled:hover {
   flex-shrink: 0;
 }
 
+.button-container {
+  display: flex;
+  gap: 10px;
+  margin-top: 10px;
+}
+
+.button-container button {
+  flex: 1;
+}
+
 .success-message, .info-message {
   margin: 10px 0;
   padding: 8px;

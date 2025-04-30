@@ -6,6 +6,7 @@ document.addEventListener('DOMContentLoaded', function() {
   const maxResultsInput = document.getElementById('max-results');
   const resetWebsiteKeywordsButton = document.getElementById('reset-website-keywords');
   const startSearchButton = document.getElementById('start-search');
+  const cancelSearchButton = document.getElementById('cancel-search');
   const resultsContainer = document.getElementById('results-container');
   const statusMessage = document.getElementById('status-message');
   const progressBar = document.getElementById('progress-bar');
@@ -36,8 +37,8 @@ document.addEventListener('DOMContentLoaded', function() {
         }
         
         if (response && response.inProgress) {
-          // Create a cancel button if a search is in progress
-          showCancelSearchOption();
+          // If search is in progress, enable cancel button and disable start button
+          updateSearchButtonStates(true);
           
           // Restore search state UI
           restoreSearchState();
@@ -106,13 +107,10 @@ document.addEventListener('DOMContentLoaded', function() {
       // Enable/disable export button
       exportCsvButton.disabled = allResults.length === 0;
       
-      // Show cancel button if appropriate
-      if (statusMessage.textContent !== 'Search completed!') {
-        showCancelSearchOption();
-      } else {
-        // If search was completed, re-enable the start button
-        startSearchButton.disabled = false;
-      }
+      // Update button states based on search status
+      const isSearchCompleted = statusMessage.textContent === 'Search completed!' || 
+                               statusMessage.textContent.includes('cancelled');
+      updateSearchButtonStates(!isSearchCompleted);
     }
   }
 
@@ -122,39 +120,29 @@ document.addEventListener('DOMContentLoaded', function() {
     window.location.href = 'settings.html';
   });
   
-  // Function to show cancel search option
-  function showCancelSearchOption() {
-    // Check if cancel button already exists
-    if (document.querySelector('.cancel-search-button')) {
-      return;
+  // Function to update search and cancel button states
+  function updateSearchButtonStates(isSearchInProgress) {
+    if (isSearchInProgress) {
+      startSearchButton.style.display = 'none';
+      cancelSearchButton.style.display = 'block';
+    } else {
+      startSearchButton.style.display = 'block';
+      cancelSearchButton.style.display = 'none';
     }
-    
-    // Create a cancel button
-    const cancelButton = document.createElement('button');
-    cancelButton.textContent = 'Cancel Running Search';
-    cancelButton.className = 'secondary-button cancel-search-button';
-    cancelButton.style.marginTop = '10px';
-    cancelButton.style.backgroundColor = '#d93025';
-    cancelButton.style.color = 'white';
-    
-    // Add it before the start search button
-    startSearchButton.parentNode.insertBefore(cancelButton, startSearchButton);
-    startSearchButton.style.display = 'none'; // Hide the start button
-    
-    // Add event listener
-    cancelButton.addEventListener('click', function() {
-      chrome.tabs.query({active: true, currentWindow: true}, function(tabs) {
-        chrome.tabs.sendMessage(tabs[0].id, { action: 'cancelSearch' }, function(response) {
-          if (response && response.status === 'search_cancelled') {
-            // Remove the cancel button and show the start button again
-            cancelButton.remove();
-            startSearchButton.style.display = 'block';
-            statusMessage.textContent = 'Previous search cancelled. You can start a new search.';
-          }
-        });
+  }
+  
+  // Add event listener for the cancel search button
+  cancelSearchButton.addEventListener('click', function() {
+    chrome.tabs.query({active: true, currentWindow: true}, function(tabs) {
+      chrome.tabs.sendMessage(tabs[0].id, { action: 'cancelSearch' }, function(response) {
+        if (response && response.status === 'search_cancelled') {
+          // Update button states
+          updateSearchButtonStates(false);
+          statusMessage.textContent = 'Search cancelled. You can start a new search.';
+        }
       });
     });
-  }
+  });
   
   // Load saved settings
   chrome.storage.local.get(['keywords', 'location', 'websiteKeywords', 'maxResults'], function(data) {
@@ -241,86 +229,65 @@ document.addEventListener('DOMContentLoaded', function() {
       'Business Name',
       'Address',
       'Website',
-      'Found Keywords',
+      'Job Keywords',
       'Contact Email',
       'Contact Page',
-      'Last Checked',
-      'Cached'
+      'Last Checked'
     ];
     
-    // Start with headers
-    let csvContent = headers.join(',') + '\n';
+    // Start with headers row
+    let csv = headers.map(h => escapeForCsv(h)).join(',') + '\r\n';
     
-    // Add rows for each result
+    // Add result rows
     results.forEach(result => {
       const row = [
-        // Escape fields that might contain commas
         escapeForCsv(result.businessName || ''),
         escapeForCsv(result.address || ''),
         escapeForCsv(result.website || ''),
         escapeForCsv(result.jobKeywords ? result.jobKeywords.join('; ') : ''),
         escapeForCsv(result.contactEmail || ''),
         escapeForCsv(result.contactPage || ''),
-        result.lastChecked ? new Date(result.lastChecked).toLocaleString() : '',
-        result.fromCache ? 'Yes' : 'No'
+        result.lastChecked ? new Date(result.lastChecked).toLocaleString() : ''
       ];
       
-      csvContent += row.join(',') + '\n';
+      csv += row.join(',') + '\r\n';
     });
     
-    return csvContent;
+    return csv;
   }
   
   // Helper function to escape CSV fields
   function escapeForCsv(field) {
-    // If the field contains commas, quotes, or newlines, wrap it in quotes
-    if (/[",\n\r]/.test(field)) {
-      // Double any existing quotes
-      field = field.replace(/"/g, '""');
-      // Wrap the field in quotes
-      return `"${field}"`;
+    if (field === null || field === undefined) {
+      return '';
     }
-    return field;
+    
+    const stringValue = String(field);
+    
+    // If the field contains quotes, commas, or newlines, enclose it in quotes
+    // and escape any quotes inside the field
+    if (/[",\n\r]/.test(stringValue)) {
+      return '"' + stringValue.replace(/"/g, '""') + '"';
+    }
+    
+    return stringValue;
   }
   
   // Function to check if a URL is in the cache
   function checkUrlInCache(url) {
     return new Promise((resolve) => {
-      // First check if cache is enabled
-      chrome.storage.local.get(['enableCache', 'cacheTime'], function(settings) {
-        const cacheEnabled = settings.enableCache !== false; // Default to true if not set
-        
-        // If cache is disabled, resolve with null
+      chrome.storage.local.get(['enableCache'], function(settings) {
+        // If cache is disabled, no need to check
+        const cacheEnabled = settings.enableCache !== false;
         if (!cacheEnabled) {
-          resolve(null);
+          resolve(false);
           return;
         }
         
-        const cacheTime = settings.cacheTime || 30; // Default to 30 days if not set
-        const cacheKey = 'cached_' + btoa(url); // Base64 encode the URL as the key
-        
-        // Check for cached data
+        // Check for URL in cache
+        const cacheKey = 'cached_' + btoa(url);
         chrome.storage.local.get([cacheKey], function(data) {
-          if (data[cacheKey]) {
-            const cachedData = data[cacheKey];
-            const now = new Date().getTime();
-            const expirationTime = cachedData.timestamp + (cacheTime * 24 * 60 * 60 * 1000); // Convert days to milliseconds
-            
-            // Check if cache is still valid
-            if (now < expirationTime) {
-              // Cache is valid, return the data
-              resolve(cachedData.data);
-            } else {
-              // Cache is expired, remove it
-              chrome.storage.local.remove([cacheKey], function() {
-                console.log('Removed expired cache entry:', url);
-                resolve(null);
-              });
-            }
-          } else {
-            // No cache entry found
-            resolve(null);
-          }
+          resolve(!!data[cacheKey]);
         });
       });
     });
@@ -349,8 +316,8 @@ document.addEventListener('DOMContentLoaded', function() {
     progressBar.style.width = '0%';
     resultsList.innerHTML = '';
     
-    // Disable the search button to prevent multiple searches
-    startSearchButton.disabled = true;
+    // Update button states - disable start button, enable cancel button
+    updateSearchButtonStates(true);
     
     // Get current tab to check if we're on Google Maps
     chrome.tabs.query({active: true, currentWindow: true}, function(tabs) {
@@ -368,7 +335,7 @@ document.addEventListener('DOMContentLoaded', function() {
               if (chrome.runtime.lastError) {
                 console.error('Error during reset:', chrome.runtime.lastError);
                 statusMessage.textContent = 'Error: Could not reset Google Maps. Please refresh the page and try again.';
-                startSearchButton.disabled = false;
+                updateSearchButtonStates(false);
                 return;
               }
               
@@ -403,7 +370,7 @@ document.addEventListener('DOMContentLoaded', function() {
                       if (chrome.runtime.lastError) {
                         console.error('Error starting search:', chrome.runtime.lastError);
                         statusMessage.textContent = 'Error: Could not start search. Please refresh the Google Maps page.';
-                        startSearchButton.disabled = false;
+                        updateSearchButtonStates(false);
                         return;
                       }
                       
@@ -415,14 +382,14 @@ document.addEventListener('DOMContentLoaded', function() {
                       } else if (searchResponse && searchResponse.status === 'error') {
                         console.error('Search error:', searchResponse.error);
                         statusMessage.textContent = `Error starting search: ${searchResponse.error}`;
-                        startSearchButton.disabled = false;
+                        updateSearchButtonStates(false);
                       } else if (searchResponse && searchResponse.status === 'busy') {
                         statusMessage.textContent = 'A search is already in progress.';
-                        // Keep button disabled as another search is running
+                        // Keep cancel button enabled as search is running
                       } else {
                         console.error('Invalid search response:', searchResponse);
                         statusMessage.textContent = 'Failed to start search. Please try again.';
-                        startSearchButton.disabled = false;
+                        updateSearchButtonStates(false);
                       }
                     }
                   );
@@ -431,19 +398,19 @@ document.addEventListener('DOMContentLoaded', function() {
                 // Reset failed or invalid response
                 console.error('Failed to reset Google Maps:', response);
                 statusMessage.textContent = 'Error: Failed to reset Google Maps. Please refresh the page and try again.';
-                startSearchButton.disabled = false;
+                updateSearchButtonStates(false);
               }
             }
           );
         } catch (err) {
           console.error('Exception during reset:', err);
           statusMessage.textContent = 'Error contacting Google Maps. Please refresh the page and try again.';
-          startSearchButton.disabled = false;
+          updateSearchButtonStates(false);
         }
       } else {
         // Not on Google Maps, show error and open Maps
         statusMessage.textContent = 'Please navigate to Google Maps first';
-        startSearchButton.disabled = false;
+        updateSearchButtonStates(false);
         const openMapsButton = document.createElement('button');
         openMapsButton.textContent = 'Open Google Maps';
         openMapsButton.className = 'primary-button';
@@ -488,7 +455,12 @@ document.addEventListener('DOMContentLoaded', function() {
       progressBar.style.width = '100%';
       
       // Re-enable the search button when search is complete
-      startSearchButton.disabled = false;
+      updateSearchButtonStates(false);
+    } else if (message.action === 'searchCancelled') {
+      statusMessage.textContent = 'Search was cancelled';
+      
+      // Re-enable the search button when search is cancelled
+      updateSearchButtonStates(false);
     }
     
     sendResponse({received: true});
@@ -500,31 +472,28 @@ document.addEventListener('DOMContentLoaded', function() {
     const resultItem = document.createElement('div');
     resultItem.className = 'result-item';
     
-    // Add 'cached-result' class if the result came from cache
+    // Check if this was a cached result
     if (result.fromCache) {
       resultItem.classList.add('cached-result');
     }
     
-    const title = document.createElement('h3');
-    title.textContent = result.businessName;
-    resultItem.appendChild(title);
+    // Business name with website link
+    const name = document.createElement('h3');
+    if (result.website) {
+      name.innerHTML = `<a href="${result.website}" target="_blank">${result.businessName}</a>`;
+    } else {
+      name.textContent = result.businessName;
+    }
+    resultItem.appendChild(name);
     
+    // Address if available
     if (result.address) {
       const address = document.createElement('p');
       address.textContent = result.address;
       resultItem.appendChild(address);
     }
     
-    if (result.website) {
-      const website = document.createElement('p');
-      const websiteLink = document.createElement('a');
-      websiteLink.href = result.website;
-      websiteLink.textContent = result.website;
-      websiteLink.target = '_blank';
-      website.appendChild(websiteLink);
-      resultItem.appendChild(website);
-    }
-    
+    // Show timeout message if applicable
     if (result.timedOut) {
       const timeoutMessage = document.createElement('p');
       timeoutMessage.innerHTML = '<strong>Note:</strong> Website timed out (took >15s to load)';

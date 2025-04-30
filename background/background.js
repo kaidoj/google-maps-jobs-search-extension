@@ -54,6 +54,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       queuedCount: websiteProcessingQueue.length
     });
     return true;
+  } else if (message.action === 'cancelSearch') {
+    // Handle cancel search request
+    cancelSearchProcess();
+    sendResponse({ status: 'search_cancelled' });
+    return true;
   } else if (message.action === 'updateProgress') {
     // Forward progress update to popup
     forwardMessageToPopup(message);
@@ -491,4 +496,77 @@ function forwardMessageToPopup(message) {
   chrome.runtime.sendMessage(message).catch(error => {
     // Ignore errors - popup might not be open
   });
+}
+
+// Cancel any ongoing search process and clean up resources
+function cancelSearchProcess() {
+  console.log('Cancelling background search process');
+  
+  // Set flag immediately to prevent any new website processing
+  processingInProgress = false;
+  
+  // Clear any pending timers to prevent scheduled processing
+  const highestTimeoutId = setTimeout(() => {}, 0);
+  for (let i = 0; i < highestTimeoutId; i++) {
+    clearTimeout(i);
+  }
+  
+  // First, find any tabs that were opened by our extension for website processing
+  if (websiteProcessingQueue && websiteProcessingQueue.length > 0) {
+    // Only query for tabs that match websites in our queue
+    const websiteUrls = websiteProcessingQueue
+      .filter(site => !site.processed)
+      .map(site => site.website);
+    
+    if (websiteUrls.length > 0) {
+      chrome.tabs.query({}, tabs => {
+        tabs.forEach(tab => {
+          // Check if this tab is one we opened for processing
+          const isProcessingTab = websiteUrls.some(url => {
+            try {
+              // Check if tab URL starts with the website URL
+              return tab.url && tab.url.startsWith(url);
+            } catch (e) {
+              return false;
+            }
+          });
+          
+          // Close any processing tabs
+          if (isProcessingTab) {
+            chrome.tabs.remove(tab.id).catch(e => {
+              console.error('Error closing tab:', e);
+            });
+          }
+        });
+      });
+    }
+  }
+  
+  // Mark all websites as processed to stop further processing
+  if (websiteProcessingQueue && websiteProcessingQueue.length > 0) {
+    websiteProcessingQueue = websiteProcessingQueue.map(site => ({
+      ...site,
+      processed: true
+    }));
+  }
+  
+  // Notify content script that the search was cancelled
+  if (activeTabId) {
+    chrome.tabs.sendMessage(activeTabId, {
+      action: 'searchCancelled'
+    }).catch(() => {
+      // Ignore errors if content script is not available
+    });
+  }
+  
+  // Send cancellation message to popup
+  forwardMessageToPopup({
+    action: 'searchCancelled',
+    status: 'Search cancelled'
+  });
+  
+  // Reset search results
+  searchResults = [];
+  
+  console.log('Background search process cancelled');
 }
