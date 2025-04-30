@@ -139,6 +139,11 @@ document.addEventListener('DOMContentLoaded', function() {
           // Update button states
           updateSearchButtonStates(false);
           statusMessage.textContent = 'Search cancelled. You can start a new search.';
+          
+          // Clear the saved search state from session storage to prevent it from reappearing
+          chrome.storage.session.remove(['searchState'], function() {
+            console.log('Search state cleared from session storage after cancellation');
+          });
         }
       });
     });
