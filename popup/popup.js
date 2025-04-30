@@ -16,6 +16,10 @@ document.addEventListener('DOMContentLoaded', function() {
   
   let allResults = []; // Store all results for CSV export
   
+  // Check if we're coming back from the settings page with a preserveState flag
+  const urlParams = new URLSearchParams(window.location.search);
+  const preserveState = urlParams.get('preserveState') === 'true';
+  
   // Default website keywords that will be used if none are specified
   const DEFAULT_WEBSITE_KEYWORDS = [
     'job', 'jobs', 'career', 'careers', 'work', 'vacancy', 'vacancies',
@@ -26,29 +30,42 @@ document.addEventListener('DOMContentLoaded', function() {
   // Connect to the content script to detect popup closure
   const port = chrome.runtime.connect({ name: 'popup' });
   
+  // If we're returning from settings, prioritize restoring the session search state
+  if (preserveState) {
+    // Restore search state from storage immediately
+    restoreSearchState();
+    // Remove the preserveState parameter from URL to avoid state confusion on refresh
+    window.history.replaceState({}, document.title, 'popup.html');
+  } else {
+    // Regular startup flow: check for running search
+    checkForRunningSearch();
+  }
+  
   // Check if there's a running search when popup opens
-  chrome.tabs.query({active: true, currentWindow: true}, function(tabs) {
-    const currentTab = tabs[0];
-    if (currentTab.url.includes('google.com/maps')) {
-      chrome.tabs.sendMessage(currentTab.id, { action: 'popupOpened' }, function(response) {
-        if (chrome.runtime.lastError) {
-          console.error('Error checking search status:', chrome.runtime.lastError);
-          return;
-        }
-        
-        if (response && response.inProgress) {
-          // If search is in progress, enable cancel button and disable start button
-          updateSearchButtonStates(true);
+  function checkForRunningSearch() {
+    chrome.tabs.query({active: true, currentWindow: true}, function(tabs) {
+      const currentTab = tabs[0];
+      if (currentTab.url.includes('google.com/maps')) {
+        chrome.tabs.sendMessage(currentTab.id, { action: 'popupOpened' }, function(response) {
+          if (chrome.runtime.lastError) {
+            console.error('Error checking search status:', chrome.runtime.lastError);
+            return;
+          }
           
-          // Restore search state UI
-          restoreSearchState();
-        } else {
-          // If no search is in progress, check if we have a saved state from previous navigation
-          checkForSavedSearchState();
-        }
-      });
-    }
-  });
+          if (response && response.inProgress) {
+            // If search is in progress, enable cancel button and disable start button
+            updateSearchButtonStates(true);
+            
+            // Restore search state UI
+            restoreSearchState();
+          } else {
+            // If no search is in progress, check if we have a saved state from previous navigation
+            checkForSavedSearchState();
+          }
+        });
+      }
+    });
+  }
   
   // Function to save search state before navigating away
   function saveSearchState() {

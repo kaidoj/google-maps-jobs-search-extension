@@ -10,7 +10,9 @@ document.addEventListener('DOMContentLoaded', function() {
   
   // Add back button event listener
   backButton.addEventListener('click', function() {
-    window.location.href = 'popup.html';
+    // When returning to the popup, make sure we keep the searchState flag
+    // This ensures the popup will restore the search progress UI
+    window.location.href = 'popup.html?preserveState=true';
   });
   
   // Submit handler for settings form
