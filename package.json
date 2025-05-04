@@ -5,7 +5,11 @@
   "main": "index.js",
   "scripts": {
     "test": "jest",
-    "test:watch": "jest --watch"
+    "test:watch": "jest --watch",
+    "prebuild": "mkdir -p ./releases/chrome",
+    "build": "npm run build:chrome",
+    "build:chrome": "npm run prebuild && npm run zip:chrome",
+    "zip:chrome": "zip -r ./releases/chrome/google-maps-jobs-search-$npm_package_version.zip . -x \"*node_modules/*\" \"*tests/*\" \"*releases/*\" \"*.git*\" \"*.DS_Store\" \"*.editorconfig\" \"*.eslintrc*\" \"*jest.config*\" \"*.vscode/*\" \"*.idea/*\""
   },
   "keywords": [],
   "author": "",
