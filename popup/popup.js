@@ -27,8 +27,11 @@ document.addEventListener('DOMContentLoaded', function() {
     'opportunity', 'employment', 'recruitment', 'join us', 'join our team',
   ];
   
-  // Connect to the content script to detect popup closure
+  // Connect to the background script to detect popup closure
   const port = chrome.runtime.connect({ name: 'popup' });
+  
+  // Notify the background script that the popup is open
+  chrome.runtime.sendMessage({ action: 'popupOpened' });
   
   // If we're returning from settings, prioritize restoring the session search state
   if (preserveState) {
@@ -45,26 +48,335 @@ document.addEventListener('DOMContentLoaded', function() {
   function checkForRunningSearch() {
     chrome.tabs.query({active: true, currentWindow: true}, function(tabs) {
       const currentTab = tabs[0];
-      if (currentTab.url.includes('google.com/maps')) {
+      if (currentTab && currentTab.url && currentTab.url.includes('google.com/maps')) {
         chrome.tabs.sendMessage(currentTab.id, { action: 'popupOpened' }, function(response) {
           if (chrome.runtime.lastError) {
             console.error('Error checking search status:', chrome.runtime.lastError);
+            // If we can't communicate with content script, try to get results from background
+            fetchResultsFromBackground();
             return;
           }
           
-          if (response && response.inProgress) {
-            // If search is in progress, enable cancel button and disable start button
-            updateSearchButtonStates(true);
-            
-            // Restore search state UI
-            restoreSearchState();
+          console.log('Received popup opened response:', response);
+          
+          if (response) {
+            // Check for completed search flag first
+            if (response.searchCompleted) {
+              console.log('Found completed search state, showing start button');
+              // If search is completed, show start button and restore results
+              updateSearchButtonStates(false);
+              fetchResultsFromBackground();
+            }
+            // Only check for inProgress if search is not completed
+            else if (response.inProgress) {
+              console.log('Search is in progress, showing cancel button');
+              // If search is in progress, enable cancel button and disable start button
+              updateSearchButtonStates(true);
+              
+              // Restore search state UI
+              restoreSearchState();
+            } else {
+              // If no search is in progress or completed, check if we have a saved state
+              console.log('No active search, checking for previous results');
+              fetchResultsFromBackground();
+            }
           } else {
-            // If no search is in progress, check if we have a saved state from previous navigation
-            checkForSavedSearchState();
+            // No response, fall back to background results
+            fetchResultsFromBackground();
           }
         });
+      } else {
+        // Not on Google Maps, check if we have saved results
+        fetchResultsFromBackground();
       }
     });
+  }
+  
+  // Function to fetch search results from background script
+  function fetchResultsFromBackground() {
+    chrome.runtime.sendMessage({ action: 'getSearchResults' }, function(response) {
+      if (chrome.runtime.lastError) {
+        console.error('Error fetching search results:', chrome.runtime.lastError);
+        // Try local popup state instead
+        checkForPopupResults();
+        return;
+      }
+      
+      if (response) {
+        console.log('Retrieved search state from background:', response);
+        
+        // First check if we have any results or are still processing
+        if ((response.results && response.results.length > 0) || 
+            (response.websiteProcessingQueue && response.websiteProcessingQueue.length > 0)) {
+          
+          displayBackgroundResults(response);
+        } else {
+          // If no results from background, check if we have saved popup results
+          checkForPopupResults();
+        }
+      } else {
+        // If no response, check for popup results
+        checkForPopupResults();
+      }
+    });
+  }
+  
+  // Function to check for popup-specific saved results
+  function checkForPopupResults() {
+    // First try to get the precise content status from session storage via content script
+    chrome.tabs.query({active: true, currentWindow: true}, function(tabs) {
+      const currentTab = tabs[0];
+      if (currentTab && currentTab.url && currentTab.url.includes('google.com/maps')) {
+        chrome.scripting.executeScript({
+          target: { tabId: currentTab.id },
+          function: () => {
+            try {
+              return {
+                status: sessionStorage.getItem('gmjs_contentStatus'),
+                progress: sessionStorage.getItem('gmjs_contentProgress'),
+                searchCompleted: sessionStorage.getItem('gmjs_searchCompleted')
+              };
+            } catch (e) {
+              console.error('Error retrieving status from session storage:', e);
+              return null;
+            }
+          }
+        }).then(results => {
+          if (results && results[0]?.result) {
+            console.log('Retrieved status from content script session storage:', results[0].result);
+            
+            // Show the results container
+            resultsContainer.classList.remove('hidden');
+            
+            // Set status and progress from session storage (most accurate)
+            if (results[0].result.status) {
+              statusMessage.textContent = results[0].result.status;
+            }
+            
+            if (results[0].result.progress) {
+              progressBar.style.width = results[0].result.progress + '%';
+            }
+            
+            // Check for the completion flag - this takes precedence over everything else
+            const isSearchCompleted = results[0].result.searchCompleted === 'true';
+            
+            if (isSearchCompleted) {
+              console.log('Search was completed, showing start button');
+              updateSearchButtonStates(false);
+              
+              // Continue to load results from local storage, but don't let it change the button state
+              checkLocalStorageResultsWithoutButtonUpdate();
+              return;
+            }
+            
+            // Only proceed to check local storage for button state if no completion flag was found
+            checkLocalStorageResults();
+          } else {
+            // Fall back to local storage if no session storage data
+            checkLocalStorageResults();
+          }
+        }).catch(error => {
+          console.error('Error executing script to retrieve status:', error);
+          checkLocalStorageResults();
+        });
+      } else {
+        // Not on Google Maps, just check local storage
+        checkLocalStorageResults();
+      }
+    });
+  }
+  
+  // Function that checks local storage but doesn't update button state
+  // This is used when we've already determined the button state from session storage
+  function checkLocalStorageResultsWithoutButtonUpdate() {
+    chrome.storage.local.get(['popupResults', 'popupStatus', 'popupProgress'], function(data) {
+      if (data.popupResults && data.popupResults.length > 0) {
+        console.log('Retrieved popup-specific saved results but keeping current button state');
+        
+        // Only update status/progress if not already set by session storage
+        if (!statusMessage.textContent || statusMessage.textContent === 'Initializing...') {
+          statusMessage.textContent = data.popupStatus || 'Previous search results';
+          progressBar.style.width = data.popupProgress || '100%';
+        }
+        
+        // Clear any existing results
+        resultsList.innerHTML = '';
+        
+        // Set results
+        allResults = data.popupResults;
+        
+        // Display results
+        allResults.forEach(result => {
+          addResultToList(result);
+        });
+        
+        // Enable export button if we have results
+        exportCsvButton.disabled = allResults.length === 0;
+      }
+    });
+  }
+  
+  // Helper function to check local storage for saved results
+  function checkLocalStorageResults() {
+    chrome.storage.local.get(['popupResults', 'popupStatus', 'popupProgress'], function(data) {
+      if (data.popupResults && data.popupResults.length > 0) {
+        console.log('Retrieved popup-specific saved results:', data);
+        
+        // Show the results container
+        resultsContainer.classList.remove('hidden');
+        
+        // Set status and progress if not already set by session storage
+        if (!statusMessage.textContent || statusMessage.textContent === 'Initializing...') {
+          statusMessage.textContent = data.popupStatus || 'Previous search results';
+          progressBar.style.width = data.popupProgress || '100%';
+        }
+        
+        // Clear any existing results
+        resultsList.innerHTML = '';
+        
+        // Set results
+        allResults = data.popupResults;
+        
+        // Display results
+        allResults.forEach(result => {
+          addResultToList(result);
+        });
+        
+        // Enable export button if we have results
+        exportCsvButton.disabled = allResults.length === 0;
+        
+        // Update button states based on status text - expanded check for completed status
+        const isSearchCompleted = 
+          (data.popupStatus || '').toLowerCase().includes('complete') || 
+          (data.popupStatus || '').toLowerCase().includes('cancel') ||
+          (data.popupStatus || '').toLowerCase().includes('finished') ||
+          (statusMessage.textContent || '').toLowerCase().includes('complete') ||
+          (statusMessage.textContent || '').toLowerCase().includes('cancel') ||
+          (statusMessage.textContent || '').toLowerCase().includes('finished') ||
+          (data.popupProgress === '100%') ||
+          (progressBar.style.width === '100%');
+          
+        // If search is completed, we should show the start button
+        updateSearchButtonStates(!isSearchCompleted);
+      }
+    });
+  }
+  
+  // Function to display results from background script
+  function displayBackgroundResults(response) {
+    // Show the results container
+    resultsContainer.classList.remove('hidden');
+    
+    let isProcessing = false; // Flag to track if search is still in progress
+    
+    // Handle different search statuses
+    if (response.status === 'complete') {
+      statusMessage.textContent = 'Search completed!';
+      progressBar.style.width = '100%';
+    } else if (response.status === 'processing') {
+      // First check if we have a detailed status message
+      if (response.detailedStatusMessage) {
+        statusMessage.textContent = response.detailedStatusMessage;
+      } else {
+        statusMessage.textContent = 'Search in progress...';
+      }
+      
+      isProcessing = true; // Set the flag since the search is still running
+      
+      // Calculate progress based on processing queue
+      if (response.websiteProcessingQueue && response.websiteProcessingQueue.length > 0) {
+        const processedCount = response.websiteProcessingQueue.filter(site => site.processed).length;
+        const totalCount = response.websiteProcessingQueue.length;
+        const progress = 50 + ((processedCount / totalCount) * 50);
+        
+        progressBar.style.width = progress + '%';
+        
+        if (processedCount < totalCount) {
+          // If we don't have a detailed status message, create one based on queue info
+          if (!response.detailedStatusMessage) {
+            statusMessage.textContent = `Processing website ${processedCount} of ${totalCount}...`;
+          }
+          isProcessing = true; // Explicitly mark as processing if we have unprocessed sites
+        } else {
+          statusMessage.textContent = 'Processing complete';
+        }
+      } else {
+        progressBar.style.width = '50%';
+        if (response.processingInProgress) {
+          isProcessing = true; // Rely on the explicit processingInProgress flag
+        }
+      }
+    } else {
+      statusMessage.textContent = 'Previous search results';
+      progressBar.style.width = '100%';
+    }
+
+    // Explicitly check the processingInProgress flag from the background
+    if (response.processingInProgress === true) {
+      isProcessing = true;
+      console.log('Background indicates search is still in progress');
+    }
+    
+    // Update button states based on processing status
+    updateSearchButtonStates(isProcessing);
+    
+    // Clear any existing results
+    resultsList.innerHTML = '';
+    
+    // Combine results from both completed results and in-progress items in the queue
+    allResults = [...(response.results || [])];
+    
+    // Check if there are any items in the processing queue that should be displayed
+    if (response.websiteProcessingQueue && response.websiteProcessingQueue.length > 0) {
+      // Find queue items that have some information but might not be in the results array yet
+      response.websiteProcessingQueue.forEach(queueItem => {
+        // Check if this item is not already in allResults
+        const isAlreadyInResults = allResults.some(result => result.website === queueItem.website);
+        
+        // If not in results but has some processed data, add it
+        if (!isAlreadyInResults && queueItem.processed) {
+          // Check if it has any data worth showing (job keywords, contact info, etc.)
+          if ((queueItem.jobKeywords && queueItem.jobKeywords.length > 0) || 
+              queueItem.contactEmail || queueItem.contactPage ||
+              (queueItem.jobListings && queueItem.jobListings.length > 0) ||
+              queueItem.timedOut) {
+            
+            // Add to results for display
+            allResults.push({
+              businessName: queueItem.businessName || "Unknown Business",
+              address: queueItem.address || "",
+              website: queueItem.website,
+              jobKeywords: queueItem.jobKeywords || [],
+              contactEmail: queueItem.contactEmail,
+              contactPage: queueItem.contactPage,
+              jobPages: queueItem.jobPages || [],
+              jobListings: queueItem.jobListings || [],
+              score: queueItem.score || 0,
+              lastChecked: queueItem.lastChecked,
+              timedOut: queueItem.timedOut || false
+            });
+          }
+        }
+      });
+    }
+    
+    // Display each result
+    allResults.forEach(result => {
+      addResultToList(result);
+    });
+    
+    // Enable export button if we have results
+    exportCsvButton.disabled = allResults.length === 0;
+    
+    // When we have results in the background, also save them to popup-specific storage
+    // This ensures we have a fallback copy
+    if (allResults.length > 0) {
+      chrome.storage.local.set({
+        'popupResults': allResults,
+        'popupStatus': statusMessage.textContent,
+        'popupProgress': progressBar.style.width
+      });
+    }
   }
   
   // Function to save search state before navigating away
@@ -78,7 +390,16 @@ document.addEventListener('DOMContentLoaded', function() {
         visible: true
       };
       
+      // Save to session storage for popup reopening
       chrome.storage.session.set({ 'searchState': searchState });
+      
+      // Also save results to local storage to ensure they're always available
+      // This helps when session storage is cleared or unavailable
+      chrome.storage.local.set({
+        'popupResults': allResults,
+        'popupStatus': statusMessage.textContent,
+        'popupProgress': progressBar.style.width
+      });
     }
   }
   
@@ -87,6 +408,9 @@ document.addEventListener('DOMContentLoaded', function() {
     chrome.storage.session.get(['searchState'], function(data) {
       if (data.searchState) {
         restoreSearchState(data.searchState);
+      } else {
+        // If no session state, try from local storage (background)
+        fetchResultsFromBackground();
       }
     });
   }
@@ -98,6 +422,9 @@ document.addEventListener('DOMContentLoaded', function() {
       chrome.storage.session.get(['searchState'], function(data) {
         if (data.searchState) {
           applySearchState(data.searchState);
+        } else {
+          // If no session state, try from local storage (background)
+          fetchResultsFromBackground();
         }
       });
     } else {
@@ -124,9 +451,16 @@ document.addEventListener('DOMContentLoaded', function() {
       // Enable/disable export button
       exportCsvButton.disabled = allResults.length === 0;
       
+      // Check for search completion status
+      const isSearchCompleted = 
+        statusMessage.textContent === 'Search completed!' || 
+        statusMessage.textContent.includes('cancelled') ||
+        statusMessage.textContent.includes('complete') ||
+        state.status === 'Search completed!' ||
+        state.progress === '100%' ||
+        sessionStorage.getItem('gmjs_searchCompleted') === 'true';
+        
       // Update button states based on search status
-      const isSearchCompleted = statusMessage.textContent === 'Search completed!' || 
-                               statusMessage.textContent.includes('cancelled');
       updateSearchButtonStates(!isSearchCompleted);
     }
   }
@@ -150,17 +484,56 @@ document.addEventListener('DOMContentLoaded', function() {
   
   // Add event listener for the cancel search button
   cancelSearchButton.addEventListener('click', function() {
+    // Update UI immediately to provide feedback
+    statusMessage.textContent = 'Cancelling search...';
+    
+    // Clear results
+    allResults = [];
+    resultsList.innerHTML = '';
+    
+    // Disable export button
+    exportCsvButton.disabled = true;
+    
     chrome.tabs.query({active: true, currentWindow: true}, function(tabs) {
+      // First clear our local storage state
+      chrome.storage.session.remove(['searchState'], function() {
+        console.log('Search state cleared from session storage');
+      });
+      
+      // Also clear any local storage search state
+      chrome.storage.local.remove([
+        'searchResults', 
+        'searchStatus', 
+        'websiteProcessingQueue', 
+        'processingInProgress',
+        'lastUpdated',
+        // Also clear popup-specific state
+        'popupResults',
+        'popupStatus',
+        'popupProgress'
+      ], function() {
+        console.log('Search state cleared from local storage');
+      });
+      
+      // Then send cancellation message to content script
       chrome.tabs.sendMessage(tabs[0].id, { action: 'cancelSearch' }, function(response) {
+        // Handle potential error (tab might not be available)
+        if (chrome.runtime.lastError) {
+          console.error('Error sending cancel message:', chrome.runtime.lastError);
+          
+          // Send direct cancellation to background script as fallback
+          chrome.runtime.sendMessage({ action: 'cancelSearch' }, function() {
+            updateSearchButtonStates(false);
+            statusMessage.textContent = 'Search cancelled. You can start a new search.';
+          });
+          return;
+        }
+        
         if (response && response.status === 'search_cancelled') {
           // Update button states
           updateSearchButtonStates(false);
           statusMessage.textContent = 'Search cancelled. You can start a new search.';
-          
-          // Clear the saved search state from session storage to prevent it from reappearing
-          chrome.storage.session.remove(['searchState'], function() {
-            console.log('Search state cleared from session storage after cancellation');
-          });
+          progressBar.style.width = '0%';
         }
       });
     });

@@ -1,11 +1,15 @@
 {
   "name": "google-maps-jobs-search",
-  "version": "1.0.0",
+  "version": "1.1.1",
   "description": "A Chrome extension that helps you find job opportunities by searching businesses on Google Maps and analyzing their websites for job listings and contact information.",
   "main": "index.js",
   "scripts": {
     "test": "jest",
-    "test:watch": "jest --watch"
+    "test:watch": "jest --watch",
+    "prebuild": "mkdir -p ./releases/chrome",
+    "build": "npm run build:chrome",
+    "build:chrome": "npm run prebuild && npm run zip:chrome",
+    "zip:chrome": "zip -r ./releases/chrome/google-maps-jobs-search-$npm_package_version.zip . -x \"*node_modules/*\" \"*tests/*\" \"*releases/*\" \"*.git*\" \"*.DS_Store\" \"*.editorconfig\" \"*.eslintrc*\" \"*jest.config*\" \"*.vscode/*\" \"*.idea/*\""
   },
   "keywords": [],
   "author": "",

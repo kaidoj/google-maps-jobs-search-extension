@@ -6,16 +6,6 @@ VERSION = $(shell grep -o '"version": "[^"]*"' manifest.json | cut -d'"' -f4)
 RELEASE_DIR = releases/chrome
 RELEASE_FILE = $(RELEASE_DIR)/$(EXTENSION_NAME)-$(VERSION).zip
 
-# Files to include in the release
-INCLUDES = manifest.json \
-           background/ \
-           css/ \
-           images/ \
-           js/ \
-           popup/ \
-           LICENSE \
-           README.md
-
 # Default target
 .PHONY: all
 all: help
@@ -27,17 +17,22 @@ help:
 	@echo "----------------------------------------------"
 	@echo "build-chrome   : Build the Chrome extension (zip for Chrome Web Store)"
 	@echo "clean          : Remove built packages"
+	@echo "test           : Run tests"
 
-# Chrome build
+# Chrome build - will only proceed if tests pass
 .PHONY: build-chrome
-build-chrome:
-	@echo "Running Tests..."
-	@npm test
+build-chrome: test
 	@echo "Building Chrome extension v$(VERSION)..."
 	@mkdir -p $(RELEASE_DIR)
-	@rm -f $(RELEASE_FILE)
-	@zip -r $(RELEASE_FILE) $(INCLUDES) -x "*/.*" -x "*/node_modules/*"
+	@npm run build:chrome
 	@echo "Chrome package created at $(RELEASE_FILE)"
+
+# Run tests
+.PHONY: test
+test:
+	@echo "Running Tests..."
+	@npm test || (echo "Tests failed! Aborting build." && exit 1)
+	@echo "Tests passed successfully!"
 
 # Clean builds
 .PHONY: clean

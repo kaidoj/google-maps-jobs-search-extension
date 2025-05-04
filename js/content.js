@@ -144,8 +144,16 @@ function initialize() {
     } else if (message.action === 'popupOpened') {
       // Add debugging
       console.log('Popup opened, current searchInProgress state:', searchInProgress);
+      
+      // Check if there's a completed search state when popup reopens
+      const searchCompleted = sessionStorage.getItem('gmjs_searchCompleted') === 'true';
+      
       // Reset search state if needed - this helps when popup was closed during search
-      sendResponse({ inProgress: searchInProgress });
+      // Include the searchCompleted flag in the response
+      sendResponse({ 
+        inProgress: searchInProgress,
+        searchCompleted: searchCompleted
+      });
       return false;
     }
     
@@ -159,31 +167,27 @@ function initialize() {
     
     // Listen for popup disconnect
     port.onDisconnect.addListener(() => {
-      console.log('Popup disconnected, checking if search should be cancelled');
+      console.log('Popup disconnected, but not canceling search automatically');
       
       // Check runtime.lastError to suppress any errors
       if (chrome.runtime.lastError) {
         console.error('Error on disconnect:', chrome.runtime.lastError);
       }
       
-      // We'll wait a moment before checking if the popup reconnects
-      // This helps with popup refreshes vs. actual closures
+      // Instead of immediately cancelling the search when popup closes,
+      // we'll check with the background script to see if we should continue
       setTimeout(() => {
-        try {
-          // Try to send a message to see if popup is still open
-          chrome.runtime.sendMessage({ action: 'ping' }, response => {
-            // If we get here without an error, the popup is still open
-            if (chrome.runtime.lastError) {
-              console.log('Popup is closed, cancelling any running search');
-              cancelSearch();
-            }
-          });
-        } catch (e) {
-          // Error means popup is closed
-          console.log('Popup is closed, cancelling any running search');
-          cancelSearch();
-        }
-      }, 500);
+        // We communicate with the background script instead of checking popup directly
+        chrome.runtime.sendMessage({ action: 'checkSearchStatus' }, response => {
+          // Only cancel if we get a specific instruction to cancel
+          if (response && response.shouldCancel) {
+            console.log('Background script indicates search should be cancelled');
+            cancelSearch();
+          } else {
+            console.log('Search will continue running in the background');
+          }
+        });
+      }, 1000); // Wait 1 second before checking
     });
   });
 }
@@ -306,7 +310,21 @@ function startBusinessSearch() {
     'ar': { inLocation: ' في ', inCurrentArea: ' في المنطقة الحالية' },
     'pl': { inLocation: ' w ', inCurrentArea: ' w obecnym obszarze' },
     'tr': { inLocation: ' ', inCurrentArea: ' mevcut bölgede' }, // Turkish uses suffixes instead of prepositions
-    'ko': { inLocation: ' ', inCurrentArea: ' 현재 지역' } // Korean often doesn't use prepositions
+    'ko': { inLocation: ' ', inCurrentArea: ' 현재 지역' }, // Korean often doesn't use prepositions
+    'sv': { inLocation: ' i ', inCurrentArea: ' i nuvarande område' }, // Swedish
+    'da': { inLocation: ' i ', inCurrentArea: ' i nuværende område' }, // Danish
+    'no': { inLocation: ' i ', inCurrentArea: ' i nåværende område' }, // Norwegian
+    'fi': { inLocation: ' ', inCurrentArea: ' nykyisellä alueella' }, // Finnish uses cases not prepositions
+    'el': { inLocation: ' σε ', inCurrentArea: ' στην τρέχουσα περιοχή' }, // Greek
+    'cs': { inLocation: ' v ', inCurrentArea: ' v aktuální oblasti' }, // Czech
+    'hu': { inLocation: ' ', inCurrentArea: ' a jelenlegi területen' }, // Hungarian uses cases
+    'ro': { inLocation: ' în ', inCurrentArea: ' în zona curentă' }, // Romanian
+    'bg': { inLocation: ' в ', inCurrentArea: ' в текущата област' }, // Bulgarian
+    'uk': { inLocation: ' в ', inCurrentArea: ' в поточній області' }, // Ukrainian
+    'hr': { inLocation: ' u ', inCurrentArea: ' u trenutnom području' }, // Croatian
+    'th': { inLocation: ' ใน ', inCurrentArea: ' ในพื้นที่ปัจจุบัน' }, // Thai
+    'id': { inLocation: ' di ', inCurrentArea: ' di area saat ini' }, // Indonesian
+    'vi': { inLocation: ' tại ', inCurrentArea: ' trong khu vực hiện tại' } // Vietnamese
   };
   
   // Map country codes to language codes if needed
@@ -324,7 +342,27 @@ function startBusinessSearch() {
     'mx': 'es', // Mexico -> Spanish
     'ar': 'es', // Argentina -> Spanish
     'cl': 'es', // Chile -> Spanish
-    'co': 'es'  // Colombia -> Spanish
+    'co': 'es', // Colombia -> Spanish
+    'pe': 'es', // Peru -> Spanish
+    've': 'es', // Venezuela -> Spanish
+    'dk': 'da', // Denmark -> Danish
+    'se': 'sv', // Sweden -> Swedish
+    'no': 'no', // Norway -> Norwegian
+    'fi': 'fi', // Finland -> Finnish
+    'gr': 'el', // Greece -> Greek
+    'cz': 'cs', // Czech Republic -> Czech
+    'hu': 'hu', // Hungary -> Hungarian
+    'ro': 'ro', // Romania -> Romanian
+    'bg': 'bg', // Bulgaria -> Bulgarian
+    'ua': 'uk', // Ukraine -> Ukrainian
+    'hr': 'hr', // Croatia -> Croatian
+    'th': 'th', // Thailand -> Thai
+    'id': 'id', // Indonesia -> Indonesian
+    'vn': 'vi', // Vietnam -> Vietnamese
+    'sg': 'en', // Singapore -> English (default, could be many others)
+    'ph': 'en', // Philippines -> English (default)
+    'my': 'en', // Malaysia -> English (default)
+    'in': 'en'  // India -> English (default)
   };
   
   // Get language code from country code if we have a mapping
@@ -338,43 +376,23 @@ function startBusinessSearch() {
   inLocationPhrase = phrases.inLocation;
   inCurrentAreaPhrase = phrases.inCurrentArea;
   
-  // Enhanced handling for French Google Maps
+  // Special handling for French Google Maps
   if (languageCode.toLowerCase() === 'fr') {
     console.log('Using enhanced query format for French Google Maps');
 
     if (!searchData.location || searchData.location.trim() === '') {
-        // If no location specified, use the current area phrase
-        query += inCurrentAreaPhrase;
+      // For current area in French, we use "dans la région actuelle"
+      query += inCurrentAreaPhrase;
     } else {
-        // Try both formats: with and without the "à" preposition
-        const directQuery = `${query} ${searchData.location.trim()}`;
-        const prepositionQuery = `${query}${inLocationPhrase}${searchData.location.trim()}`;
-
-        // Use the direct query first, fallback to preposition query if needed
-        query = directQuery;
-        console.log('Constructed direct query:', query);
-
-        // Add a fallback mechanism to switch to preposition query if direct query fails
-        setTimeout(() => {
-            if (!searchInProgress) {
-                console.log('Fallback to preposition query:', prepositionQuery);
-                query = prepositionQuery;
-                findSearchBox()
-                    .then(searchBox => {
-                        searchBox.value = query;
-                        searchBox.dispatchEvent(new Event('input', { bubbles: true }));
-                        searchBox.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, bubbles: true }));
-                    })
-                    .catch(error => console.error('Error during fallback query:', error));
-            }
-        }, 5000); // Wait 5 seconds before attempting fallback
+      // For specific locations in French, we use "à [location]"
+      query += `${inLocationPhrase}${searchData.location.trim()}`;
     }
   } else {
     // Standard approach for other languages
     if (!searchData.location || searchData.location.trim() === '') {
-        query += inCurrentAreaPhrase;
+      query += inCurrentAreaPhrase;
     } else {
-        query += `${inLocationPhrase}${searchData.location.trim()}`;
+      query += `${inLocationPhrase}${searchData.location.trim()}`;
     }
   }
   
@@ -1259,6 +1277,14 @@ async function findSearchBox() {
 
 // Update the progress in the popup
 function updatePopupProgress(status, progress) {
+  // Store the last status message in session storage
+  try {
+    sessionStorage.setItem('gmjs_contentStatus', status);
+    sessionStorage.setItem('gmjs_contentProgress', progress.toString());
+  } catch (e) {
+    console.error('Error saving status to session storage:', e);
+  }
+  
   chrome.runtime.sendMessage({
     action: 'updateProgress',
     status,
@@ -1283,6 +1309,21 @@ function calculateProgress() {
 // Finish the search process
 function finishSearch() {
   searchInProgress = false;
+  
+  // Set a flag in session storage to indicate search completion
+  try {
+    sessionStorage.setItem('gmjs_searchCompleted', 'true');
+    sessionStorage.setItem('gmjs_contentStatus', 'Search completed!');
+    sessionStorage.setItem('gmjs_contentProgress', '100');
+    
+    // Clear the in-progress flag to avoid confusion
+    sessionStorage.removeItem('gmjs_search_in_progress');
+    
+    console.log('Search completed, set searchCompleted flag in session storage');
+  } catch (e) {
+    console.error('Error setting search completion in session storage:', e);
+  }
+  
   chrome.runtime.sendMessage({
     action: 'searchComplete'
   });
@@ -1420,6 +1461,8 @@ function cancelSearch() {
     sessionStorage.removeItem('gmjs_websiteQueue');
     sessionStorage.removeItem('gmjs_searchData');
     sessionStorage.removeItem('gmjs_currentIndex');
+    // Also clear the search completion flag when canceling
+    sessionStorage.removeItem('gmjs_searchCompleted');
   } catch (e) {
     console.error('Error clearing session storage:', e);
   }
