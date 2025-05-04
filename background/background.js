@@ -4,6 +4,9 @@ let websiteProcessingQueue = [];
 let processingInProgress = false;
 let searchResults = [];
 let maxResultsLimit = 20; // Default max results limit
+let searchStatus = ''; // Track current search status
+let lastStatusMessage = ''; // Track detailed status message
+let popupOpenStatus = false; // Track whether a popup is currently open
 
 // Listen for messages from content script and popup
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
@@ -41,9 +44,14 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     // Start processing websites if not already in progress
     if (!processingInProgress && websiteProcessingQueue.length > 0) {
       processingInProgress = true;
+      searchStatus = 'processing';
+      // Store the fact that we've started processing in storage
+      storeSearchState();
       processNextWebsite(searchData);
     } else if (websiteProcessingQueue.length === 0) {
       // No websites to process, notify completion
+      searchStatus = 'complete';
+      storeSearchState();
       forwardMessageToPopup({
         action: 'searchComplete'
       });
@@ -60,23 +68,89 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     sendResponse({ status: 'search_cancelled' });
     return true;
   } else if (message.action === 'updateProgress') {
+    // Store the detailed status message for state persistence
+    if (message.status) {
+      lastStatusMessage = message.status;
+    }
+    
     // Forward progress update to popup
     forwardMessageToPopup(message);
     sendResponse({ received: true });
     return true;
   } else if (message.action === 'searchComplete') {
     // Forward completion message to popup
+    searchStatus = 'complete';
+    storeSearchState();
     forwardMessageToPopup(message);
     sendResponse({ received: true });
     return true;
   } else if (message.action === 'addResult') {
     // Add result and forward to popup
     searchResults.push(message.result);
+    // Store results whenever a new one is added
+    storeSearchState();
     forwardMessageToPopup(message);
     sendResponse({ received: true });
     return true;
+  } else if (message.action === 'getSearchResults') {
+    // Get search results from storage if they exist
+    chrome.storage.local.get(['searchResults', 'searchStatus', 'detailedStatusMessage', 'websiteProcessingQueue', 'processingInProgress', 'maxResultsLimit'], function(data) {
+      if (data.searchResults) {
+        sendResponse({ 
+          results: data.searchResults,
+          status: data.searchStatus || 'unknown',
+          detailedStatusMessage: data.detailedStatusMessage || '',
+          websiteProcessingQueue: data.websiteProcessingQueue || [],
+          processingInProgress: data.processingInProgress || false,
+          maxResultsLimit: data.maxResultsLimit || 20
+        });
+      } else {
+        // Fall back to in-memory results
+        sendResponse({ 
+          results: searchResults,
+          status: searchStatus,
+          detailedStatusMessage: lastStatusMessage || '',
+          websiteProcessingQueue: websiteProcessingQueue,
+          processingInProgress: processingInProgress,
+          maxResultsLimit: maxResultsLimit
+        });
+      }
+    });
+    return true;
+  } else if (message.action === 'popupOpened') {
+    // Mark popup as open
+    popupOpenStatus = true;
+    sendResponse({ acknowledged: true });
+    return true;
+  } else if (message.action === 'ping') {
+    // This is used to check if the popup is still open
+    sendResponse({ alive: true });
+    return true;
   }
 });
+
+// Store search state in chrome.storage.local
+function storeSearchState() {
+  // Get the current status message from the latest update
+  let detailedStatus = searchStatus;
+  if (lastStatusMessage && processingInProgress) {
+    detailedStatus = lastStatusMessage;
+  }
+
+  chrome.storage.local.set({
+    searchResults: searchResults,
+    searchStatus: searchStatus,
+    detailedStatusMessage: detailedStatus,
+    websiteProcessingQueue: websiteProcessingQueue,
+    processingInProgress: processingInProgress,
+    maxResultsLimit: maxResultsLimit,
+    lastUpdated: new Date().getTime(),
+    // Also store as popupResults for popup-specific state management
+    popupResults: searchResults,
+    popupStatus: detailedStatus,
+    popupProgress: processingInProgress ? '50%' : '100%'
+  });
+}
 
 // Function to check if a URL is in the cache
 function checkUrlInCache(url) {
@@ -681,6 +755,7 @@ function cancelSearchProcess() {
   
   // Set flag immediately to prevent any new website processing
   processingInProgress = false;
+  searchStatus = 'cancelled';
   
   // Clear any pending timers to prevent scheduled processing
   const highestTimeoutId = setTimeout(() => {}, 0);
@@ -742,8 +817,58 @@ function cancelSearchProcess() {
     status: 'Search cancelled'
   });
   
-  // Reset search results
+  // Reset all search-related state
   searchResults = [];
+  websiteProcessingQueue = [];
   
-  console.log('Background search process cancelled');
+  // Clear the stored state in chrome.storage.local
+  chrome.storage.local.remove([
+    'searchResults',
+    'searchStatus',
+    'websiteProcessingQueue',
+    'processingInProgress',
+    'lastUpdated'
+  ], () => {
+    console.log('Cleared search state from chrome.storage.local');
+  });
+  
+  // Also clear session storage if we have tab access
+  if (activeTabId) {
+    chrome.scripting.executeScript({
+      target: { tabId: activeTabId },
+      function: () => {
+        try {
+          // Clear any session storage related to search state
+          sessionStorage.removeItem('gmjs_search_in_progress');
+          sessionStorage.removeItem('gmjs_websiteQueue');
+          sessionStorage.removeItem('gmjs_searchData');
+          sessionStorage.removeItem('gmjs_currentIndex');
+          console.log('Cleared session storage in content script');
+        } catch (e) {
+          console.error('Error clearing session storage:', e);
+        }
+      }
+    }).catch(e => {
+      console.error('Error executing clear session storage script:', e);
+    });
+  }
+  
+  console.log('Background search process cancelled and all state cleared');
 }
+
+// Listen for port connections (from popup)
+chrome.runtime.onConnect.addListener((port) => {
+  if (port.name === 'popup') {
+    console.log('Popup connected to background');
+    popupOpenStatus = true;
+    
+    // Listen for disconnection
+    port.onDisconnect.addListener(() => {
+      console.log('Popup disconnected from background');
+      popupOpenStatus = false;
+      
+      // Store state when popup closes to ensure it's saved
+      storeSearchState();
+    });
+  }
+});

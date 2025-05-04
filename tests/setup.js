@@ -1,6 +1,6 @@
 // Mock Chrome API using jest-chrome
 const chrome = require('jest-chrome');
-const { mockTabs, mockRuntime } = require('./mocks/chrome-api');
+const { mockTabs, mockRuntime, mockScripting } = require('./mocks/chrome-api');
 
 // Create storage mock
 const storageMock = {
@@ -21,6 +21,7 @@ global.chrome = {
   ...chrome,
   tabs: mockTabs,
   runtime: mockRuntime,
+  scripting: mockScripting,
   storage: storageMock
 };
 

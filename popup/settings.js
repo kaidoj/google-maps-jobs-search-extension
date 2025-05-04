@@ -10,8 +10,8 @@ document.addEventListener('DOMContentLoaded', function() {
   
   // Add back button event listener
   backButton.addEventListener('click', function() {
-    // When returning to the popup, make sure we keep the searchState flag
-    // This ensures the popup will restore the search progress UI
+    // Always set preserveState to true when returning to popup
+    // This ensures the popup will restore search results
     window.location.href = 'popup.html?preserveState=true';
   });
   
@@ -27,88 +27,130 @@ document.addEventListener('DOMContentLoaded', function() {
   // Add event listener for clear saved data button
   clearCacheButton.addEventListener('click', function() {
     clearSavedWebsites();
-    updateSavedWebsitesStats();
   });
   
-  // Function to load settings from storage
+  // Load settings from storage
   function loadSettings() {
     chrome.storage.local.get(['enableCache', 'cacheTime'], function(data) {
-      // Set enable save previously visited checkbox (default to true if not set)
-      enableCacheCheckbox.checked = data.enableCache !== false;
+      if (data.enableCache !== undefined) {
+        enableCacheCheckbox.checked = data.enableCache;
+      } else {
+        // Default to enabled if not set
+        enableCacheCheckbox.checked = true;
+      }
       
-      // Set remember for days input (default to 7 days if not set)
-      cacheTimeInput.value = data.cacheTime || 7;
+      if (data.cacheTime !== undefined) {
+        cacheTimeInput.value = data.cacheTime;
+      } else {
+        // Default to 30 days if not set
+        cacheTimeInput.value = '30';
+      }
     });
   }
   
-  // Function to save settings to storage
+  // Save settings to storage
   function saveSettings(e) {
-    e.preventDefault();
+    if (e) e.preventDefault();
     
-    // Get values from form
-    const enableCache = enableCacheCheckbox.checked;
-    const cacheTime = parseInt(cacheTimeInput.value);
+    const settings = {
+      enableCache: enableCacheCheckbox.checked,
+      cacheTime: parseInt(cacheTimeInput.value)
+    };
     
-    // Save settings to storage
-    chrome.storage.local.set({
-      enableCache: enableCache,
-      cacheTime: cacheTime
-    }, function() {
-      // Show confirmation message
-      const savedMsg = document.createElement('div');
-      savedMsg.className = 'saved-message';
-      savedMsg.textContent = 'Settings saved!';
-      document.body.appendChild(savedMsg);
+    chrome.storage.local.set(settings, function() {
+      // Create a status message to show settings were saved
+      const statusElement = document.createElement('div');
+      statusElement.textContent = 'Settings saved';
+      statusElement.className = 'save-status';
       
-      // Remove message after 2 seconds
+      // Add to page
+      const settingsForm = document.getElementById('settings-form');
+      settingsForm.appendChild(statusElement);
+      
+      // Remove after 2 seconds
       setTimeout(function() {
-        document.body.removeChild(savedMsg);
+        statusElement.remove();
       }, 2000);
     });
   }
   
-  // Function to update saved website stats
+  // Update stats about saved websites
   function updateSavedWebsitesStats() {
     chrome.storage.local.get(null, function(data) {
-      let savedCount = 0;
+      // Count cache entries
+      let cacheCount = 0;
+      let oldestTimestamp = Date.now();
+      let newestTimestamp = 0;
       
-      // Count entries that start with "cached_"
       for (const key in data) {
         if (key.startsWith('cached_')) {
-          savedCount++;
+          cacheCount++;
+          
+          // Check timestamps
+          if (data[key].timestamp) {
+            oldestTimestamp = Math.min(oldestTimestamp, data[key].timestamp);
+            newestTimestamp = Math.max(newestTimestamp, data[key].timestamp);
+          }
         }
       }
       
-      // Update count in UI
-      cacheCountElement.textContent = savedCount;
+      // Update count display
+      cacheCountElement.textContent = cacheCount;
       
-      // Show stats container if there are saved websites
-      if (savedCount > 0) {
-        cacheStatsContainer.classList.remove('hidden');
+      // If we have cache entries, display the date ranges
+      if (cacheCount > 0) {
+        cacheStatsContainer.style.display = 'block';
+        
+        // Add date info
+        const oldestDate = new Date(oldestTimestamp).toLocaleDateString();
+        const newestDate = new Date(newestTimestamp).toLocaleDateString();
+        
+        const dateRangeElement = document.getElementById('cache-date-range');
+        if (dateRangeElement) {
+          dateRangeElement.textContent = `${oldestDate} to ${newestDate}`;
+        }
       } else {
-        cacheStatsContainer.classList.add('hidden');
+        cacheStatsContainer.style.display = 'none';
       }
     });
   }
   
-  // Function to clear all saved website data
+  // Clear saved websites (cache)
   function clearSavedWebsites() {
-    chrome.storage.local.get(null, function(data) {
-      const keysToRemove = [];
-      
-      // Find all keys that start with "cached_"
-      for (const key in data) {
-        if (key.startsWith('cached_')) {
-          keysToRemove.push(key);
+    if (confirm('Are you sure you want to clear all cached website data?')) {
+      // Get all keys first
+      chrome.storage.local.get(null, function(data) {
+        const keysToRemove = [];
+        
+        // Find cache keys
+        for (const key in data) {
+          if (key.startsWith('cached_')) {
+            keysToRemove.push(key);
+          }
         }
-      }
-      
-      // Remove all saved website entries
-      if (keysToRemove.length > 0) {
-        chrome.storage.local.remove(keysToRemove, function() {
-          console.log('Cleared all saved website data');
-        });
-      }
-    });
+        
+        // Remove the cache entries
+        if (keysToRemove.length > 0) {
+          chrome.storage.local.remove(keysToRemove, function() {
+            // Update stats
+            updateSavedWebsitesStats();
+            
+            // Show confirmation
+            const confirmElement = document.createElement('div');
+            confirmElement.textContent = `Cleared ${keysToRemove.length} cached websites`;
+            confirmElement.className = 'save-status';
+            
+            // Add to page
+            const settingsForm = document.getElementById('settings-form');
+            settingsForm.appendChild(confirmElement);
+            
+            // Remove after 2 seconds
+            setTimeout(function() {
+              confirmElement.remove();
+            }, 2000);
+          });
+        }
+      });
+    }
   }
 });

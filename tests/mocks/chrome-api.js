@@ -73,8 +73,22 @@ const mockRuntime = {
   }
 };
 
+// Create a mock for chrome.scripting API
+const mockScripting = {
+  executeScript: jest.fn(() => {
+    return Promise.resolve([{
+      result: {
+        status: 'Search completed!',
+        progress: '100',
+        searchCompleted: 'true'
+      }
+    }]);
+  })
+};
+
 // Export the mocks for use in tests
 module.exports = {
   mockTabs,
-  mockRuntime
+  mockRuntime,
+  mockScripting
 };

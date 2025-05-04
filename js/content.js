@@ -144,8 +144,16 @@ function initialize() {
     } else if (message.action === 'popupOpened') {
       // Add debugging
       console.log('Popup opened, current searchInProgress state:', searchInProgress);
+      
+      // Check if there's a completed search state when popup reopens
+      const searchCompleted = sessionStorage.getItem('gmjs_searchCompleted') === 'true';
+      
       // Reset search state if needed - this helps when popup was closed during search
-      sendResponse({ inProgress: searchInProgress });
+      // Include the searchCompleted flag in the response
+      sendResponse({ 
+        inProgress: searchInProgress,
+        searchCompleted: searchCompleted
+      });
       return false;
     }
     
@@ -159,31 +167,27 @@ function initialize() {
     
     // Listen for popup disconnect
     port.onDisconnect.addListener(() => {
-      console.log('Popup disconnected, checking if search should be cancelled');
+      console.log('Popup disconnected, but not canceling search automatically');
       
       // Check runtime.lastError to suppress any errors
       if (chrome.runtime.lastError) {
         console.error('Error on disconnect:', chrome.runtime.lastError);
       }
       
-      // We'll wait a moment before checking if the popup reconnects
-      // This helps with popup refreshes vs. actual closures
+      // Instead of immediately cancelling the search when popup closes,
+      // we'll check with the background script to see if we should continue
       setTimeout(() => {
-        try {
-          // Try to send a message to see if popup is still open
-          chrome.runtime.sendMessage({ action: 'ping' }, response => {
-            // If we get here without an error, the popup is still open
-            if (chrome.runtime.lastError) {
-              console.log('Popup is closed, cancelling any running search');
-              cancelSearch();
-            }
-          });
-        } catch (e) {
-          // Error means popup is closed
-          console.log('Popup is closed, cancelling any running search');
-          cancelSearch();
-        }
-      }, 500);
+        // We communicate with the background script instead of checking popup directly
+        chrome.runtime.sendMessage({ action: 'checkSearchStatus' }, response => {
+          // Only cancel if we get a specific instruction to cancel
+          if (response && response.shouldCancel) {
+            console.log('Background script indicates search should be cancelled');
+            cancelSearch();
+          } else {
+            console.log('Search will continue running in the background');
+          }
+        });
+      }, 1000); // Wait 1 second before checking
     });
   });
 }
@@ -1259,6 +1263,14 @@ async function findSearchBox() {
 
 // Update the progress in the popup
 function updatePopupProgress(status, progress) {
+  // Store the last status message in session storage
+  try {
+    sessionStorage.setItem('gmjs_contentStatus', status);
+    sessionStorage.setItem('gmjs_contentProgress', progress.toString());
+  } catch (e) {
+    console.error('Error saving status to session storage:', e);
+  }
+  
   chrome.runtime.sendMessage({
     action: 'updateProgress',
     status,
@@ -1283,6 +1295,21 @@ function calculateProgress() {
 // Finish the search process
 function finishSearch() {
   searchInProgress = false;
+  
+  // Set a flag in session storage to indicate search completion
+  try {
+    sessionStorage.setItem('gmjs_searchCompleted', 'true');
+    sessionStorage.setItem('gmjs_contentStatus', 'Search completed!');
+    sessionStorage.setItem('gmjs_contentProgress', '100');
+    
+    // Clear the in-progress flag to avoid confusion
+    sessionStorage.removeItem('gmjs_search_in_progress');
+    
+    console.log('Search completed, set searchCompleted flag in session storage');
+  } catch (e) {
+    console.error('Error setting search completion in session storage:', e);
+  }
+  
   chrome.runtime.sendMessage({
     action: 'searchComplete'
   });
@@ -1420,6 +1447,8 @@ function cancelSearch() {
     sessionStorage.removeItem('gmjs_websiteQueue');
     sessionStorage.removeItem('gmjs_searchData');
     sessionStorage.removeItem('gmjs_currentIndex');
+    // Also clear the search completion flag when canceling
+    sessionStorage.removeItem('gmjs_searchCompleted');
   } catch (e) {
     console.error('Error clearing session storage:', e);
   }
