@@ -310,7 +310,21 @@ function startBusinessSearch() {
     'ar': { inLocation: ' في ', inCurrentArea: ' في المنطقة الحالية' },
     'pl': { inLocation: ' w ', inCurrentArea: ' w obecnym obszarze' },
     'tr': { inLocation: ' ', inCurrentArea: ' mevcut bölgede' }, // Turkish uses suffixes instead of prepositions
-    'ko': { inLocation: ' ', inCurrentArea: ' 현재 지역' } // Korean often doesn't use prepositions
+    'ko': { inLocation: ' ', inCurrentArea: ' 현재 지역' }, // Korean often doesn't use prepositions
+    'sv': { inLocation: ' i ', inCurrentArea: ' i nuvarande område' }, // Swedish
+    'da': { inLocation: ' i ', inCurrentArea: ' i nuværende område' }, // Danish
+    'no': { inLocation: ' i ', inCurrentArea: ' i nåværende område' }, // Norwegian
+    'fi': { inLocation: ' ', inCurrentArea: ' nykyisellä alueella' }, // Finnish uses cases not prepositions
+    'el': { inLocation: ' σε ', inCurrentArea: ' στην τρέχουσα περιοχή' }, // Greek
+    'cs': { inLocation: ' v ', inCurrentArea: ' v aktuální oblasti' }, // Czech
+    'hu': { inLocation: ' ', inCurrentArea: ' a jelenlegi területen' }, // Hungarian uses cases
+    'ro': { inLocation: ' în ', inCurrentArea: ' în zona curentă' }, // Romanian
+    'bg': { inLocation: ' в ', inCurrentArea: ' в текущата област' }, // Bulgarian
+    'uk': { inLocation: ' в ', inCurrentArea: ' в поточній області' }, // Ukrainian
+    'hr': { inLocation: ' u ', inCurrentArea: ' u trenutnom području' }, // Croatian
+    'th': { inLocation: ' ใน ', inCurrentArea: ' ในพื้นที่ปัจจุบัน' }, // Thai
+    'id': { inLocation: ' di ', inCurrentArea: ' di area saat ini' }, // Indonesian
+    'vi': { inLocation: ' tại ', inCurrentArea: ' trong khu vực hiện tại' } // Vietnamese
   };
   
   // Map country codes to language codes if needed
@@ -328,7 +342,27 @@ function startBusinessSearch() {
     'mx': 'es', // Mexico -> Spanish
     'ar': 'es', // Argentina -> Spanish
     'cl': 'es', // Chile -> Spanish
-    'co': 'es'  // Colombia -> Spanish
+    'co': 'es', // Colombia -> Spanish
+    'pe': 'es', // Peru -> Spanish
+    've': 'es', // Venezuela -> Spanish
+    'dk': 'da', // Denmark -> Danish
+    'se': 'sv', // Sweden -> Swedish
+    'no': 'no', // Norway -> Norwegian
+    'fi': 'fi', // Finland -> Finnish
+    'gr': 'el', // Greece -> Greek
+    'cz': 'cs', // Czech Republic -> Czech
+    'hu': 'hu', // Hungary -> Hungarian
+    'ro': 'ro', // Romania -> Romanian
+    'bg': 'bg', // Bulgaria -> Bulgarian
+    'ua': 'uk', // Ukraine -> Ukrainian
+    'hr': 'hr', // Croatia -> Croatian
+    'th': 'th', // Thailand -> Thai
+    'id': 'id', // Indonesia -> Indonesian
+    'vn': 'vi', // Vietnam -> Vietnamese
+    'sg': 'en', // Singapore -> English (default, could be many others)
+    'ph': 'en', // Philippines -> English (default)
+    'my': 'en', // Malaysia -> English (default)
+    'in': 'en'  // India -> English (default)
   };
   
   // Get language code from country code if we have a mapping
@@ -342,43 +376,23 @@ function startBusinessSearch() {
   inLocationPhrase = phrases.inLocation;
   inCurrentAreaPhrase = phrases.inCurrentArea;
   
-  // Enhanced handling for French Google Maps
+  // Special handling for French Google Maps
   if (languageCode.toLowerCase() === 'fr') {
     console.log('Using enhanced query format for French Google Maps');
 
     if (!searchData.location || searchData.location.trim() === '') {
-        // If no location specified, use the current area phrase
-        query += inCurrentAreaPhrase;
+      // For current area in French, we use "dans la région actuelle"
+      query += inCurrentAreaPhrase;
     } else {
-        // Try both formats: with and without the "à" preposition
-        const directQuery = `${query} ${searchData.location.trim()}`;
-        const prepositionQuery = `${query}${inLocationPhrase}${searchData.location.trim()}`;
-
-        // Use the direct query first, fallback to preposition query if needed
-        query = directQuery;
-        console.log('Constructed direct query:', query);
-
-        // Add a fallback mechanism to switch to preposition query if direct query fails
-        setTimeout(() => {
-            if (!searchInProgress) {
-                console.log('Fallback to preposition query:', prepositionQuery);
-                query = prepositionQuery;
-                findSearchBox()
-                    .then(searchBox => {
-                        searchBox.value = query;
-                        searchBox.dispatchEvent(new Event('input', { bubbles: true }));
-                        searchBox.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, bubbles: true }));
-                    })
-                    .catch(error => console.error('Error during fallback query:', error));
-            }
-        }, 5000); // Wait 5 seconds before attempting fallback
+      // For specific locations in French, we use "à [location]"
+      query += `${inLocationPhrase}${searchData.location.trim()}`;
     }
   } else {
     // Standard approach for other languages
     if (!searchData.location || searchData.location.trim() === '') {
-        query += inCurrentAreaPhrase;
+      query += inCurrentAreaPhrase;
     } else {
-        query += `${inLocationPhrase}${searchData.location.trim()}`;
+      query += `${inLocationPhrase}${searchData.location.trim()}`;
     }
   }
   
