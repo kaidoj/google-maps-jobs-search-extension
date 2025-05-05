@@ -11,6 +11,27 @@ function initialize() {
   
   // Check if we need to restore state after a page refresh
   try {
+    // First check if search was already completed
+    const searchCompleted = sessionStorage.getItem('gmjs_searchCompleted') === 'true';
+    
+    // If search was completed, don't attempt to resume it on page refresh
+    if (searchCompleted) {
+      console.log('Previous search was completed, no need to restore');
+      
+      // Make sure searchInProgress is false to prevent any new search tasks
+      searchInProgress = false;
+      
+      // Keep the completed flag but clear any in-progress flags and website queue
+      sessionStorage.removeItem('gmjs_search_in_progress');
+      sessionStorage.removeItem('gmjs_websiteQueue');
+      sessionStorage.removeItem('gmjs_searchData');
+      sessionStorage.removeItem('gmjs_currentIndex');
+      
+      // Also ensure the websiteQueue is cleared in memory
+      websiteQueue = [];
+      return;
+    }
+    
     if (sessionStorage.getItem('gmjs_search_in_progress') === 'true') {
       console.log('Detected interrupted search, attempting to restore state');
       const storedQueue = sessionStorage.getItem('gmjs_websiteQueue');
@@ -30,6 +51,8 @@ function initialize() {
           // Resume from website processing since we already have the queue
           console.log('Resuming search with recovered data');
           searchInProgress = true;
+          
+          // Resume the search after a small delay
           setTimeout(() => {
             processWebsiteQueue();
           }, 1000);
@@ -1534,6 +1557,18 @@ function cancelSearch() {
 // Process the queue of websites to search for job listings
 function processWebsiteQueue() {
   const totalWebsites = websiteQueue.length;
+  
+  // First check if search was already completed to prevent duplicate processing on page refresh
+  const searchCompleted = sessionStorage.getItem('gmjs_searchCompleted') === 'true';
+  if (searchCompleted) {
+    console.log('Search already completed, not processing websites again');
+    
+    // Make sure searchInProgress is false
+    searchInProgress = false;
+    
+    // Make sure we keep the completed state but don't reprocess websites
+    return;
+  }
   
   if (totalWebsites === 0) {
     updatePopupProgress('No websites found to process', 50);
