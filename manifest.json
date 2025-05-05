@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Hidden Job Search Helper",
-  "version": "1.1.1",
+  "version": "1.1.2",
   "description": "Find hidden job opportunities on business websites via Google Maps, tailored to your location, and export results to CSV.",
   "permissions": [
     "activeTab",

@@ -33,8 +33,37 @@ document.addEventListener('DOMContentLoaded', function() {
   // Notify the background script that the popup is open
   chrome.runtime.sendMessage({ action: 'popupOpened' });
   
-  // If we're returning from settings, prioritize restoring the session search state
-  if (preserveState) {
+  // Save state before popup closes (including when links are clicked)
+  window.addEventListener('beforeunload', function() {
+    saveSearchState();
+  });
+  
+  // Capture any clicks on links that might open in new tabs
+  document.body.addEventListener('click', function(e) {
+    // Look for link clicks that might close the popup
+    if (e.target.tagName === 'A' || e.target.closest('a')) {
+      const link = e.target.tagName === 'A' ? e.target : e.target.closest('a');
+      
+      // If this is an external link (has href and target="_blank" or opens in new tab)
+      if (link.href && (link.target === '_blank' || link.getAttribute('rel') === 'noopener')) {
+        // Save state before the popup closes due to opening a new tab
+        saveSearchState();
+        
+        // Set a flag in sessionStorage indicating we're coming back from an external link
+        try {
+          sessionStorage.setItem('gmjs_return_from_link', 'true');
+        } catch (e) {
+          console.error('Error setting return flag in session storage:', e);
+        }
+      }
+    }
+  }, true);
+  
+  // If we're returning from settings or from an external link, restore state
+  if (preserveState || sessionStorage.getItem('gmjs_return_from_link') === 'true') {
+    // Clear the return flag
+    sessionStorage.removeItem('gmjs_return_from_link');
+    
     // Restore search state from storage immediately
     restoreSearchState();
     // Remove the preserveState parameter from URL to avoid state confusion on refresh
@@ -158,7 +187,8 @@ document.addEventListener('DOMContentLoaded', function() {
             }
             
             // Check for the completion flag - this takes precedence over everything else
-            const isSearchCompleted = results[0].result.searchCompleted === 'true';
+            const isSearchCompleted = results[0].result.searchCompleted === 'true' || 
+                                      (results[0].result.status && results[0].result.status.includes('complete'));
             
             if (isSearchCompleted) {
               console.log('Search was completed, showing start button');
@@ -218,46 +248,113 @@ document.addEventListener('DOMContentLoaded', function() {
   
   // Helper function to check local storage for saved results
   function checkLocalStorageResults() {
-    chrome.storage.local.get(['popupResults', 'popupStatus', 'popupProgress'], function(data) {
+    chrome.storage.local.get(['popupResults', 'popupStatus', 'popupProgress', 'searchResults', 'searchStatus', 'processingInProgress'], function(data) {
       if (data.popupResults && data.popupResults.length > 0) {
         console.log('Retrieved popup-specific saved results:', data);
         
         // Show the results container
         resultsContainer.classList.remove('hidden');
         
-        // Set status and progress if not already set by session storage
-        if (!statusMessage.textContent || statusMessage.textContent === 'Initializing...') {
-          statusMessage.textContent = data.popupStatus || 'Previous search results';
-          progressBar.style.width = data.popupProgress || '100%';
-        }
+        // Determine the correct status to show
+        let correctStatus = 'Search completed!';
+        let correctProgress = '100%';
         
-        // Clear any existing results
-        resultsList.innerHTML = '';
-        
-        // Set results
-        allResults = data.popupResults;
-        
-        // Display results
-        allResults.forEach(result => {
-          addResultToList(result);
+        // First check if we have the search completed flag in session storage
+        chrome.tabs.query({active: true, currentWindow: true}, function(tabs) {
+          const currentTab = tabs[0];
+          if (currentTab && currentTab.url && currentTab.url.includes('google.com/maps')) {
+            chrome.scripting.executeScript({
+              target: { tabId: currentTab.id },
+              function: () => {
+                try {
+                  return {
+                    searchCompleted: sessionStorage.getItem('gmjs_searchCompleted')
+                  };
+                } catch (e) {
+                  console.error('Error retrieving completed flag from session storage:', e);
+                  return { searchCompleted: null };
+                }
+              }
+            }).then(results => {
+              // If we have a completed flag in session storage, always use that as source of truth
+              if (results && results[0]?.result?.searchCompleted === 'true') {
+                setCompletedState();
+              } else {
+                // Otherwise, fall back to local storage logic
+                checkLocalStorageFallback();
+              }
+            }).catch(err => {
+              console.error('Error executing script to check completed status:', err);
+              checkLocalStorageFallback();
+            });
+          } else {
+            // Not on Google Maps, use local storage fallback
+            checkLocalStorageFallback();
+          }
         });
         
-        // Enable export button if we have results
-        exportCsvButton.disabled = allResults.length === 0;
-        
-        // Update button states based on status text - expanded check for completed status
-        const isSearchCompleted = 
-          (data.popupStatus || '').toLowerCase().includes('complete') || 
-          (data.popupStatus || '').toLowerCase().includes('cancel') ||
-          (data.popupStatus || '').toLowerCase().includes('finished') ||
-          (statusMessage.textContent || '').toLowerCase().includes('complete') ||
-          (statusMessage.textContent || '').toLowerCase().includes('cancel') ||
-          (statusMessage.textContent || '').toLowerCase().includes('finished') ||
-          (data.popupProgress === '100%') ||
-          (progressBar.style.width === '100%');
+        // Fallback function to determine status from local storage
+        function checkLocalStorageFallback() {
+          // Check if search is still in progress according to background script
+          const isStillProcessing = data.processingInProgress === true && 
+                                   !(data.searchStatus === 'complete' || data.searchStatus === 'cancelled');
           
-        // If search is completed, we should show the start button
-        updateSearchButtonStates(!isSearchCompleted);
+          // If a search was previously completed, never show "Starting to process..." message
+          // This prevents the "stuck" message issue when refreshing the page
+          if (data.popupStatus && data.popupStatus.includes('Starting to process')) {
+            correctStatus = 'Search completed!';
+          } else if (!isStillProcessing) {
+            // Search is completed, override any "in progress" status that was saved
+            correctStatus = 'Search completed!';
+          } else if (data.popupStatus) {
+            // Use saved status 
+            correctStatus = data.popupStatus;
+          }
+          
+          setStatus(correctStatus, isStillProcessing);
+        }
+        
+        // Helper function to set completed state
+        function setCompletedState() {
+          correctStatus = 'Search completed!';
+          setStatus(correctStatus, false);
+        }
+        
+        // Helper function to set the status and update UI
+        function setStatus(status, isStillProcessing) {
+          // Set status and progress
+          statusMessage.textContent = status;
+          progressBar.style.width = isStillProcessing ? (data.popupProgress || '50%') : '100%';
+          
+          // Clear any existing results
+          resultsList.innerHTML = '';
+          
+          // Set results
+          allResults = data.popupResults;
+          
+          // Display results
+          allResults.forEach(result => {
+            addResultToList(result);
+          });
+          
+          // Enable export button if we have results
+          exportCsvButton.disabled = allResults.length === 0;
+          
+          // Update button states based on status text - expanded check for completed status
+          const isSearchCompleted = 
+            !isStillProcessing || 
+            (data.popupStatus || '').toLowerCase().includes('complete') || 
+            (data.popupStatus || '').toLowerCase().includes('cancel') ||
+            (data.popupStatus || '').toLowerCase().includes('finished') ||
+            (statusMessage.textContent || '').toLowerCase().includes('complete') ||
+            (statusMessage.textContent || '').toLowerCase().includes('cancel') ||
+            (statusMessage.textContent || '').toLowerCase().includes('finished') ||
+            (data.popupProgress === '100%') ||
+            (progressBar.style.width === '100%');
+            
+          // If search is completed, we should show the start button
+          updateSearchButtonStates(!isSearchCompleted);
+        }
       }
     });
   }
