@@ -28,6 +28,26 @@ document.addEventListener('DOMContentLoaded', function() {
     'opportunity', 'employment', 'recruitment', 'join us', 'join our team',
   ];
   
+  // Initialize the website keywords immediately with defaults
+  websiteKeywordsInput.value = DEFAULT_WEBSITE_KEYWORDS.join(', ');
+  
+  // Save default keywords to storage if they don't exist yet
+  chrome.storage.local.get(['websiteKeywords'], function(data) {
+    console.log("Loaded website keywords from storage:", data.websiteKeywords);
+    
+    if (!data.websiteKeywords || data.websiteKeywords.trim() === '') {
+      // No stored keywords, use and save defaults
+      console.log("No website keywords found in storage, saving defaults");
+      chrome.storage.local.set({
+        websiteKeywords: DEFAULT_WEBSITE_KEYWORDS.join(', ')
+      });
+    } else {
+      // Update the input with saved keywords from storage
+      console.log("Using website keywords from storage");
+      websiteKeywordsInput.value = data.websiteKeywords;
+    }
+  });
+  
   // Connect to the background script to detect popup closure
   const port = chrome.runtime.connect({ name: 'popup' });
   
@@ -79,41 +99,86 @@ document.addEventListener('DOMContentLoaded', function() {
     chrome.tabs.query({active: true, currentWindow: true}, function(tabs) {
       const currentTab = tabs[0];
       if (currentTab && currentTab.url && currentTab.url.includes('google.com/maps')) {
-        chrome.tabs.sendMessage(currentTab.id, { action: 'popupOpened' }, function(response) {
-          if (chrome.runtime.lastError) {
-            console.error('Error checking search status:', chrome.runtime.lastError);
-            // If we can't communicate with content script, try to get results from background
-            fetchResultsFromBackground();
-            return;
+        // First check via scripting API if search is in progress
+        chrome.scripting.executeScript({
+          target: { tabId: currentTab.id },
+          function: () => {
+            return {
+              searchInProgress: sessionStorage.getItem('gmjs_search_in_progress') === 'true',
+              searchCompleted: sessionStorage.getItem('gmjs_searchCompleted') === 'true',
+              status: sessionStorage.getItem('gmjs_contentStatus'),
+              progress: sessionStorage.getItem('gmjs_contentProgress'),
+              searchData: sessionStorage.getItem('gmjs_searchData')
+            };
           }
-          
-          console.log('Received popup opened response:', response);
-          
-          if (response) {
-            // Check for completed search flag first
-            if (response.searchCompleted) {
-              console.log('Found completed search state, showing start button');
-              // If search is completed, show start button and restore results
-              updateSearchButtonStates(false);
-              fetchResultsFromBackground();
-            }
-            // Only check for inProgress if search is not completed
-            else if (response.inProgress) {
+        }).then(results => {
+          if (results && results[0]?.result) {
+            console.log('Search state from session storage:', results[0].result);
+            
+            // Check if search is in progress based on session storage
+            const searchInProgress = results[0].result.searchInProgress;
+            // Check if search is completed based on session storage
+            const searchCompleted = results[0].result.searchCompleted === 'true';
+            
+            // If search is in progress, update UI accordingly
+            if (searchInProgress && !searchCompleted) {
               console.log('Search is in progress, showing cancel button');
-              // If search is in progress, enable cancel button and disable start button
+              // Update UI to show search in progress
               updateSearchButtonStates(true);
               
-              // Restore search state UI
+              // Show status and progress if available
+              if (results[0].result.status) {
+                statusMessage.textContent = results[0].result.status;
+                resultsContainer.classList.remove('hidden');
+              }
+              
+              if (results[0].result.progress) {
+                progressBar.style.width = results[0].result.progress + '%';
+              }
+              
+              // Restore any search parameters
               restoreSearchState();
+              return;
+            }
+          }
+          
+          // Fall back to the message approach if script execution didn't find an active search
+          chrome.tabs.sendMessage(currentTab.id, { action: 'popupOpened' }, function(response) {
+            if (chrome.runtime.lastError) {
+              console.error('Error checking search status:', chrome.runtime.lastError);
+              // If we can't communicate with content script, try to get results from background
+              fetchResultsFromBackground();
+              return;
+            }
+            
+            console.log('Received popup opened response:', response);
+            
+            if (response) {
+              // Check for completed search flag first
+              if (response.searchCompleted) {
+                console.log('Found completed search state, showing start button');
+                // If search is completed, show start button and restore results
+                updateSearchButtonStates(false);
+                fetchResultsFromBackground();
+              }
+              // Only check for inProgress if search is not completed
+              else if (response.inProgress) {
+                console.log('Search is in progress, showing cancel button');
+                // If search is in progress, enable cancel button and disable start button
+                updateSearchButtonStates(true);
+                
+                // Restore search state UI
+                restoreSearchState();
+              } else {
+                // If no search is in progress or completed, check if we have a saved state
+                console.log('No active search, checking for previous results');
+                fetchResultsFromBackground();
+              }
             } else {
-              // If no search is in progress or completed, check if we have a saved state
-              console.log('No active search, checking for previous results');
+              // No response, fall back to background results
               fetchResultsFromBackground();
             }
-          } else {
-            // No response, fall back to background results
-            fetchResultsFromBackground();
-          }
+          });
         });
       } else {
         // Not on Google Maps, check if we have saved results
@@ -565,7 +630,12 @@ document.addEventListener('DOMContentLoaded', function() {
 
   // Settings button click handler
   settingsButton.addEventListener('click', function() {
+    console.log('Settings button clicked');
+    
+    // Save current state
     saveSearchState();
+    
+    // Navigate to settings page within the same popup window
     window.location.href = 'settings.html';
   });
   
@@ -637,20 +707,15 @@ document.addEventListener('DOMContentLoaded', function() {
     });
   });
   
-  // Load saved settings
-  chrome.storage.local.get(['keywords', 'jobKeywords', 'location', 'websiteKeywords', 'maxResults'], function(data) {
+  // Then load saved settings
+  chrome.storage.local.get(['keywords', 'jobKeywords', 'location', 'maxResults'], function(data) {
     if (data.keywords) keywordsInput.value = data.keywords;
     if (data.jobKeywords) jobKeywordsInput.value = data.jobKeywords;
     if (data.location) locationInput.value = data.location;
     if (data.maxResults) maxResultsInput.value = data.maxResults;
-    if (data.websiteKeywords) {
-      websiteKeywordsInput.value = data.websiteKeywords;
-    } else {
-      // Set default website keywords if none are saved
-      websiteKeywordsInput.value = DEFAULT_WEBSITE_KEYWORDS.join(', ');
-      // Save the defaults
-      saveWebsiteKeywords();
-    }
+    
+    // Note: websiteKeywords are loaded separately at the top of the file
+    console.log("Loaded general settings from storage");
   });
   
   // Save settings when inputs change
@@ -662,21 +727,64 @@ document.addEventListener('DOMContentLoaded', function() {
     });
   }
   
+  // Save job keywords separately
+  function saveJobKeywords() {
+    chrome.storage.local.set({
+      jobKeywords: jobKeywordsInput.value
+    });
+  }
+  
+  // Save max results separately
+  function saveMaxResults() {
+    chrome.storage.local.set({
+      maxResults: maxResultsInput.value
+    });
+  }
+  
   // Save website keywords separately
   function saveWebsiteKeywords() {
+    // If the input is empty, use the defaults
+    const valueToSave = websiteKeywordsInput.value.trim() !== '' 
+      ? websiteKeywordsInput.value 
+      : DEFAULT_WEBSITE_KEYWORDS.join(', ');
+      
+    // Always use the value we're saving (could be different from input)
+    websiteKeywordsInput.value = valueToSave;
+    
     chrome.storage.local.set({
-      websiteKeywords: websiteKeywordsInput.value
+      websiteKeywords: valueToSave
     });
   }
   
   keywordsInput.addEventListener('change', saveSettings);
   locationInput.addEventListener('change', saveSettings);
+  jobKeywordsInput.addEventListener('change', saveJobKeywords);
+  maxResultsInput.addEventListener('change', saveMaxResults);
   websiteKeywordsInput.addEventListener('change', saveWebsiteKeywords);
   
   // Reset website keywords to defaults
   resetWebsiteKeywordsButton.addEventListener('click', function() {
-    websiteKeywordsInput.value = DEFAULT_WEBSITE_KEYWORDS.join(', ');
-    saveWebsiteKeywords();
+    console.log("Reset website keywords button clicked");
+    
+    // Get the defaults directly from the constant
+    const defaultKeywords = DEFAULT_WEBSITE_KEYWORDS.join(', ');
+    
+    // Update UI immediately
+    websiteKeywordsInput.value = defaultKeywords;
+    
+    // Flash effect to indicate reset
+    websiteKeywordsInput.style.backgroundColor = '#e6f7ff';
+    setTimeout(() => {
+      websiteKeywordsInput.style.backgroundColor = '';
+    }, 300);
+    
+    // Save the updated website keywords
+    chrome.storage.local.set({
+      websiteKeywords: defaultKeywords
+    }, function() {
+      console.log('Default website keywords restored successfully');
+      alert('Website keywords have been reset to defaults!');
+    });
   });
   
   // CSV Export functionality
@@ -805,12 +913,15 @@ document.addEventListener('DOMContentLoaded', function() {
   
   // Start search button click handler
   startSearchButton.addEventListener('click', function() {
+    console.log("Start search button clicked");
+    
     const keywords = keywordsInput.value.trim();
     if (!keywords) {
       alert('Please enter at least one keyword');
       return;
     }
     
+    // Save settings first
     saveSettings();
     saveWebsiteKeywords();
     

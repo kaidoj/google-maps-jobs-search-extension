@@ -502,14 +502,14 @@ function searchForJobContent(website, searchData) {
     const searchKeywords = searchData.keywords;
     
     // Define default common job-related terms to look for
-    const defaultJobTerms = [
+    const defaultWebsiteKeywords = [
       'job', 'jobs', 'career', 'careers', 'work', 'vacancy', 'vacancies',
       'hire', 'hiring', 'apply', 'application', 'position', 'spontaneous',
       'opportunity', 'employment', 'recruitment', 'join us', 'join our team',
     ];
     
     // Use custom website keywords if provided, otherwise use defaults
-    const commonJobTerms = searchData.websiteKeywords || defaultJobTerms;
+    const commonJobTerms = searchData.websiteKeywords || defaultWebsiteKeywords;
     
     // Common paths to check for careers/jobs
     const jobPaths = [

@@ -171,13 +171,50 @@ function initialize() {
       // Check if there's a completed search state when popup reopens
       const searchCompleted = sessionStorage.getItem('gmjs_searchCompleted') === 'true';
       
-      // Reset search state if needed - this helps when popup was closed during search
+      // Check if search is in progress according to session storage
+      const searchInProgressFromStorage = sessionStorage.getItem('gmjs_search_in_progress') === 'true';
+      
+      // If either memory or session storage indicates a search is in progress, report it as in progress
+      const isActuallyInProgress = searchInProgress || searchInProgressFromStorage;
+      
+      // If storage indicates search is in progress but memory says no, synchronize them
+      if (isActuallyInProgress && !searchInProgress) {
+          console.log('Search is marked as in progress in session storage but not in memory. Synchronizing state.');
+          searchInProgress = true;
+          
+          // Retrieve the search data if available
+          try {
+              const storedData = sessionStorage.getItem('gmjs_searchData');
+              if (storedData) {
+                  searchData = JSON.parse(storedData);
+              }
+              
+              // Ensure session storage flag is set to match our memory state
+              sessionStorage.setItem('gmjs_search_in_progress', 'true');
+          } catch (e) {
+              console.error('Error parsing stored search data:', e);
+          }
+      }
+      
+      // If memory indicates search is in progress but storage says no, synchronize them
+      if (searchInProgress && !searchInProgressFromStorage) {
+          try {
+              console.log('Search is in progress in memory but not in storage. Synchronizing state.');
+              sessionStorage.setItem('gmjs_search_in_progress', 'true');
+              if (searchData) {
+                  sessionStorage.setItem('gmjs_searchData', JSON.stringify(searchData));
+              }
+          } catch (e) {
+              console.error('Error setting search state in session storage:', e);
+          }
+      }
+      
       // Include the searchCompleted flag in the response
       sendResponse({ 
-        inProgress: searchInProgress,
+        inProgress: isActuallyInProgress,
         searchCompleted: searchCompleted
       });
-      return false;
+      return true; // Keep messaging channel open for async operations
     }
     
     // Default return for any other messages
@@ -221,6 +258,27 @@ function startMapsSearch(data) {
   searchResults = [];
   currentResultIndex = 0;
   websiteQueue = [];
+  
+  // Set search in progress flag in session storage
+  try {
+    // First make absolutely sure we remove any completed flag
+    sessionStorage.removeItem('gmjs_searchCompleted');
+    
+    // Set both the in progress flag and search data
+    sessionStorage.setItem('gmjs_search_in_progress', 'true');
+    sessionStorage.setItem('gmjs_searchData', JSON.stringify(data));
+    console.log('Set gmjs_search_in_progress to true in session storage');
+    
+    // Clear any previous status/progress
+    sessionStorage.removeItem('gmjs_contentProgress');
+    sessionStorage.removeItem('gmjs_contentStatus');
+    
+    // Clear any previous website queue and current index
+    sessionStorage.removeItem('gmjs_websiteQueue');
+    sessionStorage.removeItem('gmjs_currentIndex');
+  } catch (e) {
+    console.error('Error saving search state to session storage:', e);
+  }
   
   // Return a promise that resolves when search initialization is complete
   return new Promise((resolve, reject) => {
@@ -1335,12 +1393,17 @@ function finishSearch() {
   
   // Set a flag in session storage to indicate search completion
   try {
+    // Set completion flags and status
     sessionStorage.setItem('gmjs_searchCompleted', 'true');
     sessionStorage.setItem('gmjs_contentStatus', 'Search completed!');
     sessionStorage.setItem('gmjs_contentProgress', '100');
     
     // Clear the in-progress flag to avoid confusion
     sessionStorage.removeItem('gmjs_search_in_progress');
+    
+    // Clear any remaining search state data
+    sessionStorage.removeItem('gmjs_websiteQueue');
+    sessionStorage.removeItem('gmjs_currentIndex');
     
     console.log('Search completed, set searchCompleted flag in session storage');
   } catch (e) {
@@ -1480,12 +1543,16 @@ function cancelSearch() {
   
   // Clear any stored search state from session storage
   try {
+    // Clear all search-related flags and data
     sessionStorage.removeItem('gmjs_search_in_progress');
     sessionStorage.removeItem('gmjs_websiteQueue');
     sessionStorage.removeItem('gmjs_searchData');
     sessionStorage.removeItem('gmjs_currentIndex');
-    // Also clear the search completion flag when canceling
     sessionStorage.removeItem('gmjs_searchCompleted');
+    sessionStorage.removeItem('gmjs_contentStatus');
+    sessionStorage.removeItem('gmjs_contentProgress');
+    
+    console.log('Successfully cleared all search state from session storage');
   } catch (e) {
     console.error('Error clearing session storage:', e);
   }
