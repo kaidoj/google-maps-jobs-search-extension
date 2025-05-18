@@ -85,8 +85,21 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   } else if (message.action === 'searchComplete') {
     // Forward completion message to popup
     searchStatus = 'complete';
+    
+    // Update the search results if provided with final results
+    if (message.finalResults && Array.isArray(message.finalResults)) {
+      searchResults = message.finalResults;
+    }
+    
+    // Store the updated state with completion info
     storeSearchState();
-    forwardMessageToPopup(message);
+    
+    // Forward the completion message and current timestamp to popup
+    forwardMessageToPopup({
+      ...message,
+      completedTimestamp: Date.now()
+    });
+    
     sendResponse({ received: true });
     return true;
   } else if (message.action === 'addResult') {
@@ -106,15 +119,69 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   } else if (message.action === 'getSearchResults') {
     // Get search results from storage if they exist
-    chrome.storage.local.get(['searchResults', 'searchStatus', 'detailedStatusMessage', 'websiteProcessingQueue', 'processingInProgress', 'maxResultsLimit'], function(data) {
-      if (data.searchResults) {
+    const keysToGet = [
+      'searchResults', 
+      'popupResults',
+      'searchStatus', 
+      'detailedStatusMessage', 
+      'websiteProcessingQueue', 
+      'processingInProgress', 
+      'maxResultsLimit'
+    ];
+    
+    // Add timestamps if requested
+    if (message.includeTimestamps) {
+      keysToGet.push('searchCompletedTimestamp', 'lastUpdated');
+    }
+    
+    chrome.storage.local.get(keysToGet, function(data) {
+      console.log(`getSearchResults: In-memory has ${searchResults.length} results, storage has ${(data.searchResults || []).length} results, popupResults has ${(data.popupResults || []).length} results`);
+      
+      // Determine which results to use - in-memory are the most recent
+      let resultsToReturn = [];
+      
+      if (searchResults.length > 0) {
+        // First priority: use in-memory results
+        resultsToReturn = searchResults;
+        console.log('Using in-memory results (most recent): ' + searchResults.length);
+      } else if (message.forceLatestResults) {
+        // If we're forcing latest results, use the larger set of results
+        const useSearchResults = data.searchResults && data.searchResults.length > 0;
+        const usePopupResults = data.popupResults && data.popupResults.length > 0;
+        
+        if (useSearchResults && usePopupResults) {
+          if (data.searchResults.length >= data.popupResults.length) {
+            console.log('Using searchResults (larger): ' + data.searchResults.length);
+            resultsToReturn = data.searchResults;
+          } else {
+            console.log('Using popupResults (larger): ' + data.popupResults.length);
+            resultsToReturn = data.popupResults;
+          }
+        } else if (useSearchResults) {
+          console.log('Using searchResults (only option): ' + data.searchResults.length);
+          resultsToReturn = data.searchResults;
+        } else if (usePopupResults) {
+          console.log('Using popupResults (only option): ' + data.popupResults.length);
+          resultsToReturn = data.popupResults;
+        } else {
+          console.log('No results found in storage');
+          resultsToReturn = [];
+        }
+      } else {
+        // Otherwise use search results with fallback to popup results
+        resultsToReturn = data.searchResults || data.popupResults || [];
+      }
+      
+      if (resultsToReturn.length > 0) {
         sendResponse({ 
-          results: data.searchResults,
+          results: resultsToReturn,
           status: data.searchStatus || 'unknown',
           detailedStatusMessage: data.detailedStatusMessage || '',
           websiteProcessingQueue: data.websiteProcessingQueue || [],
           processingInProgress: data.processingInProgress || false,
-          maxResultsLimit: data.maxResultsLimit || 20
+          maxResultsLimit: data.maxResultsLimit || 20,
+          searchCompletedTimestamp: data.searchCompletedTimestamp || null,
+          lastUpdated: data.lastUpdated || null
         });
       } else {
         // Fall back to in-memory results
@@ -149,6 +216,9 @@ function storeSearchState() {
     detailedStatus = lastStatusMessage;
   }
 
+  const currentTime = Date.now();
+  const isComplete = searchStatus === 'complete' || searchStatus === 'cancelled';
+
   chrome.storage.local.set({
     searchResults: searchResults,
     searchStatus: searchStatus,
@@ -156,11 +226,12 @@ function storeSearchState() {
     websiteProcessingQueue: websiteProcessingQueue,
     processingInProgress: processingInProgress,
     maxResultsLimit: maxResultsLimit,
-    lastUpdated: new Date().getTime(),
+    lastUpdated: currentTime,
+    searchCompletedTimestamp: isComplete ? currentTime : null,
     // Also store as popupResults for popup-specific state management
     popupResults: searchResults,
-    popupStatus: detailedStatus,
-    popupProgress: processingInProgress ? '50%' : '100%'
+    popupStatus: isComplete ? 'Search completed!' : detailedStatus,
+    popupProgress: isComplete ? '100%' : (processingInProgress ? '50%' : '100%')
   });
 }
 
@@ -250,9 +321,17 @@ function processNextWebsite(searchData) {
       });
     }
     
-    // Send completion message to popup
+    // Set search as complete
+    searchStatus = 'complete';
+    
+    // Store the final state with all search results
+    storeSearchState();
+    
+    // Send completion message to popup with all results
     forwardMessageToPopup({
-      action: 'searchComplete'
+      action: 'searchComplete',
+      finalResults: searchResults,
+      completedTimestamp: Date.now()
     });
     
     return;
@@ -765,6 +844,9 @@ function cancelSearchProcess() {
   processingInProgress = false;
   searchStatus = 'cancelled';
   
+  // Record the timestamp when the search was cancelled
+  const cancellationTimestamp = Date.now();
+  
   // Clear any pending timers to prevent scheduled processing
   const highestTimeoutId = setTimeout(() => {}, 0);
   for (let i = 0; i < highestTimeoutId; i++) {
@@ -820,9 +902,24 @@ function cancelSearchProcess() {
   }
   
   // Send cancellation message to popup
+  // First store the final state with cancellation info before cleaning up
+  chrome.storage.local.set({
+    searchResults: searchResults,
+    searchStatus: 'cancelled',
+    detailedStatusMessage: 'Search cancelled',
+    processingInProgress: false,
+    searchCompletedTimestamp: cancellationTimestamp,
+    lastUpdated: cancellationTimestamp,
+    // Also update popup-specific state
+    popupResults: searchResults,
+    popupStatus: 'Search cancelled',
+    popupProgress: '100%'
+  });
+  
   forwardMessageToPopup({
     action: 'searchCancelled',
-    status: 'Search cancelled'
+    status: 'Search cancelled',
+    searchCompletedTimestamp: cancellationTimestamp
   });
   
   // Reset all search-related state

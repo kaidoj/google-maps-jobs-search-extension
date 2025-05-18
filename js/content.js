@@ -209,10 +209,35 @@ function initialize() {
           }
       }
       
-      // Include the searchCompleted flag in the response
+      // Check if we have final results in session storage to include in the response
+      let finalResults = null;
+      let searchCompletedTimestamp = null;
+      
+      try {
+        // Get the completed timestamp
+        const timestampStr = sessionStorage.getItem('gmjs_searchCompletedTimestamp');
+        if (timestampStr) {
+          searchCompletedTimestamp = parseInt(timestampStr);
+        }
+        
+        // Get final results if available
+        const finalResultsStr = sessionStorage.getItem('gmjs_finalResults');
+        if (finalResultsStr) {
+          finalResults = JSON.parse(finalResultsStr);
+          console.log(`Found ${finalResults.length} stored final results to include in popup response`);
+        }
+      } catch (e) {
+        console.error('Error retrieving final results from session storage:', e);
+      }
+      
+      // Include the searchCompleted flag and final results in the response
       sendResponse({ 
         inProgress: isActuallyInProgress,
-        searchCompleted: searchCompleted
+        searchCompleted: searchCompleted,
+        finalResults: finalResults,
+        searchCompletedTimestamp: searchCompletedTimestamp,
+        status: sessionStorage.getItem('gmjs_contentStatus'),
+        progress: sessionStorage.getItem('gmjs_contentProgress')
       });
       return true; // Keep messaging channel open for async operations
     }
@@ -1391,6 +1416,8 @@ function calculateProgress() {
 function finishSearch() {
   searchInProgress = false;
   
+  const completedTimestamp = Date.now();
+  
   // Set a flag in session storage to indicate search completion
   try {
     // Set completion flags and status
@@ -1405,13 +1432,30 @@ function finishSearch() {
     sessionStorage.removeItem('gmjs_websiteQueue');
     sessionStorage.removeItem('gmjs_currentIndex');
     
+    // Set a timestamp to track when the search was completed
+    sessionStorage.setItem('gmjs_searchCompletedTimestamp', completedTimestamp.toString());
+    
+    // Store the final results in session storage as well
+    // This ensures they're available if the popup reopens immediately
+    try {
+      // We need to stringify the results first
+      sessionStorage.setItem('gmjs_finalResults', JSON.stringify(searchResults));
+      console.log(`Stored ${searchResults.length} final results in session storage`);
+    } catch (storageErr) {
+      console.error('Error storing final results in session storage:', storageErr);
+    }
+    
     console.log('Search completed, set searchCompleted flag in session storage');
   } catch (e) {
     console.error('Error setting search completion in session storage:', e);
   }
   
+  // Send a message to the background script to store the updated results
+  // This ensures the results are available when the popup reopens
   chrome.runtime.sendMessage({
-    action: 'searchComplete'
+    action: 'searchComplete',
+    finalResults: searchResults,
+    completedTimestamp: completedTimestamp
   });
 }
 
