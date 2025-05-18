@@ -2,15 +2,18 @@
  * Career page helpers - Functions to better process career pages and job site links
  */
 
-// Function to be injected into career pages to search for job site links
-function searchForJobSiteLinks(careerPageUrl) {
+// Function to be injected into career pages to search for job site links and user-defined keywords
+function searchForJobSiteLinks(careerPageUrl, searchKeywords = [], jobKeywords = []) {
   const result = {
     jobSiteLinks: [],
-    keywords: []
+    keywords: [],
+    userKeywords: [], // Track user-defined keywords found
+    jobSpecificKeywords: [], // Track job-specific keywords found
+    score: 0          // Keep track of score for this career page
   };
   
   try {
-    console.log('Searching for job site links on career page:', careerPageUrl);
+    console.log('Searching for job site links and keywords on career page:', careerPageUrl);
     
     // Define known job sites to look for
     const knownJobSites = [
@@ -55,19 +58,56 @@ function searchForJobSiteLinks(careerPageUrl) {
             url: absoluteUrl,
             name: jobSite.name
           });
+          result.score += 25; // Add 25 points for each job site link found
           break;
         }
       }
     }
     
-    // Also look for common job-related keywords
+    // Get all text content of the page
     const pageText = document.body.textContent.toLowerCase();
-    const commonKeywords = ['job', 'career', 'position', 'vacancy', 'opportunity', 'employment'];
+    
+    // Look for common job-related keywords
+    const commonKeywords = ['job', 'career', 'position', 'vacancy', 'opportunity', 'employment', 
+                          'hiring', 'apply', 'application', 'join us', 'join our team'];
     
     for (const keyword of commonKeywords) {
       if (pageText.includes(keyword)) {
         result.keywords.push(keyword);
+        result.score += 5; // Add 5 points for each common job keyword found
       }
+    }
+    
+    // Look for user-defined keywords (more valuable)
+    if (Array.isArray(searchKeywords) && searchKeywords.length > 0) {
+      console.log(`Scanning career page for ${searchKeywords.length} user-defined keywords`);
+      
+      for (const keyword of searchKeywords) {
+        const keywordLower = keyword.toLowerCase();
+        if (pageText.includes(keywordLower)) {
+          console.log(`Found user keyword on career page: ${keyword}`);
+          result.userKeywords.push(keyword);
+          result.score += 20; // Add 20 points for each user-defined keyword found
+        }
+      }
+      
+      console.log(`Found ${result.userKeywords.length} user-defined keywords on career page`);
+    }
+    
+    // Look for job-specific keywords (highest scoring)
+    if (Array.isArray(jobKeywords) && jobKeywords.length > 0) {
+      console.log(`Scanning career page for ${jobKeywords.length} job-specific keywords`);
+      
+      for (const keyword of jobKeywords) {
+        const keywordLower = keyword.toLowerCase();
+        if (pageText.includes(keywordLower)) {
+          console.log(`Found job-specific keyword on career page: ${keyword}`);
+          result.jobSpecificKeywords.push(keyword);
+          result.score += 40; // Add 40 points for each job-specific keyword found
+        }
+      }
+      
+      console.log(`Found ${result.jobSpecificKeywords.length} job-specific keywords on career page`);
     }
     
     return result;
@@ -108,15 +148,74 @@ function processCareerPage(careerPageUrl, parentWebsite, parentResult, searchDat
         
         // Give the page a moment to fully initialize
         setTimeout(() => {
-          // Execute script to find job site links
+          // Execute script to find job site links and keywords
           chrome.scripting.executeScript({
             target: { tabId },
             function: searchForJobSiteLinks,
-            args: [careerPageUrl]
+            args: [
+              careerPageUrl, 
+              searchData.keywords || [], 
+              searchData.jobKeywords || [] // Also pass the job-specific keywords
+            ]
           }).then(results => {
             if (results && results[0] && results[0].result) {
               const careerPageResults = results[0].result;
               console.log(`Found on career page:`, careerPageResults);
+              
+              // Update parent score based on career page scan results
+              if (careerPageResults.score > 0) {
+                parentResult.score += Math.min(careerPageResults.score, 50); // Add up to 50 more points max
+                console.log(`Updated score from career page scan: +${Math.min(careerPageResults.score, 50)} points`);
+              }
+              
+              // Add any found user-defined keywords to the parent result
+              if (careerPageResults.userKeywords && careerPageResults.userKeywords.length > 0) {
+                console.log(`Found ${careerPageResults.userKeywords.length} user-defined keywords on career page`);
+                for (const keyword of careerPageResults.userKeywords) {
+                  if (!parentResult.jobKeywords.includes(keyword)) {
+                    parentResult.jobKeywords.push(keyword);
+                  }
+                }
+              }
+              
+              // Add job-specific keywords if found
+              if (careerPageResults.jobSpecificKeywords && careerPageResults.jobSpecificKeywords.length > 0) {
+                console.log(`Found ${careerPageResults.jobSpecificKeywords.length} job-specific keywords on career page`);
+                
+                // Initialize jobSpecificKeywords array if needed
+                if (!parentResult.jobSpecificKeywords) {
+                  parentResult.jobSpecificKeywords = [];
+                }
+                
+                // Add job-specific keywords to parent result
+                for (const keyword of careerPageResults.jobSpecificKeywords) {
+                  if (!parentResult.jobSpecificKeywords.includes(keyword)) {
+                    parentResult.jobSpecificKeywords.push(keyword);
+                  }
+                }
+              }
+              
+              // Add any found job-specific keywords to the parent result
+              if (careerPageResults.jobSpecificKeywords && careerPageResults.jobSpecificKeywords.length > 0) {
+                console.log(`Found ${careerPageResults.jobSpecificKeywords.length} job-specific keywords on career page`);
+                
+                // Initialize the jobSpecificKeywords array if it doesn't exist
+                if (!parentResult.jobSpecificKeywords) {
+                  parentResult.jobSpecificKeywords = [];
+                }
+                
+                // Add the job-specific keywords
+                for (const keyword of careerPageResults.jobSpecificKeywords) {
+                  if (!parentResult.jobSpecificKeywords.includes(keyword)) {
+                    parentResult.jobSpecificKeywords.push(keyword);
+                  }
+                  
+                  // Also add to regular jobKeywords for backward compatibility
+                  if (!parentResult.jobKeywords.includes(keyword)) {
+                    parentResult.jobKeywords.push(keyword);
+                  }
+                }
+              }
               
               // If job site links were found
               if (careerPageResults.jobSiteLinks && careerPageResults.jobSiteLinks.length > 0) {
@@ -153,14 +252,16 @@ function processCareerPage(careerPageUrl, parentWebsite, parentResult, searchDat
                   websiteProcessingQueue[parentWebsiteIndex] = {
                     ...websiteProcessingQueue[parentWebsiteIndex],
                     score: parentResult.score,
-                    jobSiteLinks: parentResult.jobSiteLinks
+                    jobSiteLinks: parentResult.jobSiteLinks,
+                    jobKeywords: parentResult.jobKeywords  // Include updated job keywords
                   };
                   
                   // Update the cache with the enhanced result
                   cacheWebsiteResult(parentWebsite.website, {
                     ...parentResult,
                     score: parentResult.score,
-                    jobSiteLinks: parentResult.jobSiteLinks
+                    jobSiteLinks: parentResult.jobSiteLinks,
+                    jobKeywords: parentResult.jobKeywords  // Include updated job keywords
                   });
                   
                   // Update in search results if already present
@@ -169,7 +270,8 @@ function processCareerPage(careerPageUrl, parentWebsite, parentResult, searchDat
                       searchResults[i] = {
                         ...searchResults[i],
                         score: parentResult.score,
-                        jobSiteLinks: parentResult.jobSiteLinks
+                        jobSiteLinks: parentResult.jobSiteLinks,
+                        jobKeywords: parentResult.jobKeywords
                       };
                       
                       // Send the updated result to popup

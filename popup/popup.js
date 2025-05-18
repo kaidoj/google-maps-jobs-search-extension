@@ -1,6 +1,7 @@
 document.addEventListener('DOMContentLoaded', function() {
   // DOM elements
   const keywordsInput = document.getElementById('keywords');
+  const jobKeywordsInput = document.getElementById('job-keywords');
   const locationInput = document.getElementById('location');
   const websiteKeywordsInput = document.getElementById('website-keywords');
   const maxResultsInput = document.getElementById('max-results');
@@ -637,8 +638,9 @@ document.addEventListener('DOMContentLoaded', function() {
   });
   
   // Load saved settings
-  chrome.storage.local.get(['keywords', 'location', 'websiteKeywords', 'maxResults'], function(data) {
+  chrome.storage.local.get(['keywords', 'jobKeywords', 'location', 'websiteKeywords', 'maxResults'], function(data) {
     if (data.keywords) keywordsInput.value = data.keywords;
+    if (data.jobKeywords) jobKeywordsInput.value = data.jobKeywords;
     if (data.location) locationInput.value = data.location;
     if (data.maxResults) maxResultsInput.value = data.maxResults;
     if (data.websiteKeywords) {
@@ -723,6 +725,7 @@ document.addEventListener('DOMContentLoaded', function() {
       'Address',
       'Website',
       'Job Keywords',
+      'High Priority Keywords',
       'Contact Email',
       'Contact Page',
       'Career Page',
@@ -749,6 +752,7 @@ document.addEventListener('DOMContentLoaded', function() {
         escapeForCsv(result.address || ''),
         escapeForCsv(result.website || ''),
         escapeForCsv(result.jobKeywords ? result.jobKeywords.join('; ') : ''),
+        escapeForCsv(result.jobSpecificKeywords ? result.jobSpecificKeywords.join('; ') : ''),
         escapeForCsv(result.contactEmail || ''),
         escapeForCsv(result.contactPage || ''),
         escapeForCsv(result.careerPage || ''),
@@ -855,11 +859,17 @@ document.addEventListener('DOMContentLoaded', function() {
                     ? websiteKeywordsInput.value.split(',').map(k => k.trim())
                     : DEFAULT_WEBSITE_KEYWORDS;
                     
+                  // Get job keywords
+                  const jobKeywords = jobKeywordsInput.value.trim()
+                    ? jobKeywordsInput.value.split(',').map(k => k.trim())
+                    : [];
+                    
                   // Set search data
                   const searchData = {
                     keywords: keywords.split(',').map(k => k.trim()),
                     location: locationInput.value.trim(),
                     websiteKeywords: websiteKeywords,
+                    jobKeywords: jobKeywords, // Add job-specific keywords
                     maxResults: parseInt(maxResultsInput.value) || 20
                   };
                   
@@ -1057,6 +1067,15 @@ document.addEventListener('DOMContentLoaded', function() {
         const keywords = document.createElement('p');
         keywords.innerHTML = '<strong>Found keywords:</strong> ' + result.jobKeywords.join(', ');
         resultItem.appendChild(keywords);
+      }
+      
+      // Display job-specific keywords if available (highlighted with higher importance)
+      if (result.jobSpecificKeywords && result.jobSpecificKeywords.length > 0) {
+        const jobSpecificKeywords = document.createElement('p');
+        jobSpecificKeywords.className = 'job-specific-keywords';
+        jobSpecificKeywords.innerHTML = '<strong>High priority matches:</strong> <span class="highlight">' + 
+          result.jobSpecificKeywords.join('</span>, <span class="highlight">') + '</span>';
+        resultItem.appendChild(jobSpecificKeywords);
       }
       
       // Display job listings if available

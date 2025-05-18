@@ -348,6 +348,7 @@ function processWebsiteWithTab(website, nextWebsiteIndex, searchData) {
                 address: website.address || "",
                 website: website.website,
                 jobKeywords: result.jobKeywords || [],
+                jobSpecificKeywords: result.jobSpecificKeywords || [], // Include job-specific keywords
                 contactEmail: result.contactEmail,
                 contactPage: result.contactPage,
                 careerPage: result.careerPage, // Add separate career page field
@@ -477,6 +478,7 @@ function searchForJobContent(website, searchData) {
   // Result object
   const result = {
     jobKeywords: [],
+    jobSpecificKeywords: [], // New field for high-priority job keywords
     contactEmail: null,
     contactPage: null,
     jobPages: [],
@@ -535,6 +537,31 @@ function searchForJobContent(website, searchData) {
           result.score += 20; // Add 20 points for each user keyword found on main page
         }
       }
+    }
+    
+    // Search for job-specific keywords (highest priority)
+    const jobKeywords = searchData.jobKeywords || [];
+    if (jobKeywords.length > 0) {
+      console.log(`Searching for ${jobKeywords.length} job-specific keywords on main page`);
+      
+      for (const keyword of jobKeywords) {
+        const keywordLower = keyword.toLowerCase();
+        if (pageText.includes(keywordLower)) {
+          console.log(`Found job-specific keyword on main page: ${keyword}`);
+          
+          // Add to job-specific keywords
+          result.jobSpecificKeywords.push(keyword);
+          
+          // Also add to regular job keywords for backward compatibility
+          if (!result.jobKeywords.includes(keyword)) {
+            result.jobKeywords.push(keyword);
+          }
+          
+          result.score += 40; // Add 40 points for each job-specific keyword found on main page
+        }
+      }
+      
+      console.log(`Found ${result.jobSpecificKeywords.length} job-specific keywords on main page`);
     }
     
     // Search for job links
@@ -919,6 +946,28 @@ function processJobSiteLinks(jobSiteLinks, parentWebsite, parentResult, searchDa
                   }
                 }
                 
+                // Add job-specific keywords if found
+                if (jobSiteResult.jobSpecificKeywords && jobSiteResult.jobSpecificKeywords.length > 0) {
+                  console.log(`Found ${jobSiteResult.jobSpecificKeywords.length} job-specific keywords on job site: ${jobSiteResult.jobSpecificKeywords.join(', ')}`);
+                  
+                  // Initialize jobSpecificKeywords array if needed
+                  if (!parentResult.jobSpecificKeywords) {
+                    parentResult.jobSpecificKeywords = [];
+                  }
+                  
+                  // Add job-specific keywords to parent result
+                  for (const keyword of jobSiteResult.jobSpecificKeywords) {
+                    if (!parentResult.jobSpecificKeywords.includes(keyword)) {
+                      parentResult.jobSpecificKeywords.push(keyword);
+                    }
+                  }
+                  
+                  // Add bonus score for job-specific keywords
+                  const bonusPoints = Math.min(jobSiteResult.jobSpecificKeywords.length * 20, 50);
+                  parentResult.score = Math.min(parentResult.score + bonusPoints, 150);
+                  console.log(`Added ${bonusPoints} bonus points for job-specific keywords. New score: ${parentResult.score}`);
+                }
+                
                 // Add job listings found on the job site
                 if (jobSiteResult.jobListings && jobSiteResult.jobListings.length > 0) {
                   console.log(`Found ${jobSiteResult.jobListings.length} job listings on job site`);
@@ -943,6 +992,7 @@ function processJobSiteLinks(jobSiteLinks, parentWebsite, parentResult, searchDa
                     ...websiteProcessingQueue[parentWebsiteIndex],
                     score: parentResult.score,
                     jobKeywords: parentResult.jobKeywords,
+                    jobSpecificKeywords: parentResult.jobSpecificKeywords,
                     jobListings: parentResult.jobListings,
                     jobSiteLinks: parentResult.jobSiteLinks
                   };
@@ -952,6 +1002,7 @@ function processJobSiteLinks(jobSiteLinks, parentWebsite, parentResult, searchDa
                     ...parentResult,
                     score: parentResult.score,
                     jobKeywords: parentResult.jobKeywords,
+                    jobSpecificKeywords: parentResult.jobSpecificKeywords,
                     jobListings: parentResult.jobListings,
                     jobSiteLinks: parentResult.jobSiteLinks
                   });
@@ -967,6 +1018,7 @@ function processJobSiteLinks(jobSiteLinks, parentWebsite, parentResult, searchDa
                       ...searchResults[i],
                       score: parentResult.score,
                       jobKeywords: parentResult.jobKeywords,
+                      jobSpecificKeywords: parentResult.jobSpecificKeywords,
                       jobListings: parentResult.jobListings,
                       jobSiteLinks: parentResult.jobSiteLinks
                     };
@@ -1059,6 +1111,12 @@ function searchJobSiteForKeywords(parentWebsite, searchData, jobSiteLink) {
     // Get the search keywords
     const searchKeywords = searchData.keywords;
     
+    // Get the job-specific keywords if available
+    const jobKeywords = searchData.jobKeywords || [];
+    if (jobKeywords.length > 0) {
+      console.log(`Also searching for job-specific keywords: ${jobKeywords.join(', ')}`);
+    }
+    
     // Get all text content of the page
     const pageText = document.body.textContent.toLowerCase();
     console.log(`Job site page text length: ${pageText.length}`);
@@ -1068,12 +1126,29 @@ function searchJobSiteForKeywords(parentWebsite, searchData, jobSiteLink) {
     const isJobSite = jobTerms.some(term => pageText.includes(term.toLowerCase()));
     console.log(`Is confirmed job site: ${isJobSite}`);
     
+    // Initialize job-specific keywords array
+    result.jobSpecificKeywords = [];
+    
     // Search for user-provided keywords on the job site
     for (const keyword of searchKeywords) {
       const keywordLower = keyword.toLowerCase();
       if (pageText.includes(keywordLower)) {
         console.log(`Found keyword on job site: ${keyword}`);
         result.foundKeywords.push(keyword);
+      }
+    }
+    
+    // Search for job-specific keywords on the job site (these get highest scoring)
+    for (const keyword of jobKeywords) {
+      const keywordLower = keyword.toLowerCase();
+      if (pageText.includes(keywordLower)) {
+        console.log(`Found job-specific keyword on job site: ${keyword}`);
+        result.jobSpecificKeywords.push(keyword);
+        
+        // Also add to regular foundKeywords for backward compatibility
+        if (!result.foundKeywords.includes(keyword)) {
+          result.foundKeywords.push(keyword);
+        }
       }
     }
     

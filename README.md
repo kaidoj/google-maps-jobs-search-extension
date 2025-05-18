@@ -16,6 +16,7 @@ Available on [Chrome Web Store](https://chromewebstore.google.com/detail/google-
 ## Scoring 
 
 * Perfect Match (Score 100): When a job listing on a career page contains the exact keywords the user searched for
+* Job-Specific Keywords (Score 40 per keyword): When job-specific high-priority keywords are found
 * Keyword Relevance (Score 50-80): Based on how many user keywords are found on job pages
 * Job Page Relevance (Score 30): Added when a website has dedicated job/career pages
 * User Keyword Matches (Score 20 per keyword): When user's keywords appear on the main page
@@ -51,6 +52,7 @@ To install and run this extension in Chrome developer mode:
 2. Click on the extension icon to open the popup
 3. Enter your search criteria:
    - Keywords (e.g., "software engineer", "marketing")
+   - Job Keywords (e.g., "remote", "senior", "full-time") - high-priority keywords that get extra scoring
    - Location (e.g., "Berlin, Germany")
    - Max Results (default: 20) - limits the number of websites processed
    - Customize Website Keywords (optional) - terms used to identify job opportunities
