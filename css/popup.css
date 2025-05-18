@@ -306,6 +306,23 @@ button:disabled:hover {
   color: #1a73e8;
 }
 
+/* Styles for job-specific keywords */
+.job-specific-keywords {
+  margin: 8px 0;
+  padding: 5px 8px;
+  background-color: #f2f8ff;
+  border-left: 3px solid #1a73e8;
+  border-radius: 4px;
+}
+
+.job-specific-keywords .highlight {
+  font-weight: bold;
+  color: #0d5bdd;
+  background-color: #e8f0fe;
+  padding: 2px 4px;
+  border-radius: 3px;
+}
+
 .result-footer {
   display: flex;
   align-items: center;

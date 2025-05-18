@@ -1,6 +1,7 @@
 document.addEventListener('DOMContentLoaded', function() {
   // DOM elements
   const keywordsInput = document.getElementById('keywords');
+  const jobKeywordsInput = document.getElementById('job-keywords');
   const locationInput = document.getElementById('location');
   const websiteKeywordsInput = document.getElementById('website-keywords');
   const maxResultsInput = document.getElementById('max-results');
@@ -26,6 +27,26 @@ document.addEventListener('DOMContentLoaded', function() {
     'hire', 'hiring', 'apply', 'application', 'position', 'spontaneous',
     'opportunity', 'employment', 'recruitment', 'join us', 'join our team',
   ];
+  
+  // Initialize the website keywords immediately with defaults
+  websiteKeywordsInput.value = DEFAULT_WEBSITE_KEYWORDS.join(', ');
+  
+  // Save default keywords to storage if they don't exist yet
+  chrome.storage.local.get(['websiteKeywords'], function(data) {
+    console.log("Loaded website keywords from storage:", data.websiteKeywords);
+    
+    if (!data.websiteKeywords || data.websiteKeywords.trim() === '') {
+      // No stored keywords, use and save defaults
+      console.log("No website keywords found in storage, saving defaults");
+      chrome.storage.local.set({
+        websiteKeywords: DEFAULT_WEBSITE_KEYWORDS.join(', ')
+      });
+    } else {
+      // Update the input with saved keywords from storage
+      console.log("Using website keywords from storage");
+      websiteKeywordsInput.value = data.websiteKeywords;
+    }
+  });
   
   // Connect to the background script to detect popup closure
   const port = chrome.runtime.connect({ name: 'popup' });
@@ -78,41 +99,121 @@ document.addEventListener('DOMContentLoaded', function() {
     chrome.tabs.query({active: true, currentWindow: true}, function(tabs) {
       const currentTab = tabs[0];
       if (currentTab && currentTab.url && currentTab.url.includes('google.com/maps')) {
-        chrome.tabs.sendMessage(currentTab.id, { action: 'popupOpened' }, function(response) {
-          if (chrome.runtime.lastError) {
-            console.error('Error checking search status:', chrome.runtime.lastError);
-            // If we can't communicate with content script, try to get results from background
-            fetchResultsFromBackground();
-            return;
+        // First check via scripting API if search is in progress
+        chrome.scripting.executeScript({
+          target: { tabId: currentTab.id },
+          function: () => {
+            return {
+              searchInProgress: sessionStorage.getItem('gmjs_search_in_progress') === 'true',
+              searchCompleted: sessionStorage.getItem('gmjs_searchCompleted') === 'true',
+              status: sessionStorage.getItem('gmjs_contentStatus'),
+              progress: sessionStorage.getItem('gmjs_contentProgress'),
+              searchData: sessionStorage.getItem('gmjs_searchData')
+            };
           }
-          
-          console.log('Received popup opened response:', response);
-          
-          if (response) {
-            // Check for completed search flag first
-            if (response.searchCompleted) {
-              console.log('Found completed search state, showing start button');
-              // If search is completed, show start button and restore results
-              updateSearchButtonStates(false);
-              fetchResultsFromBackground();
-            }
-            // Only check for inProgress if search is not completed
-            else if (response.inProgress) {
+        }).then(results => {
+          if (results && results[0]?.result) {
+            console.log('Search state from session storage:', results[0].result);
+            
+            // Check if search is in progress based on session storage
+            const searchInProgress = results[0].result.searchInProgress;
+            // Check if search is completed based on session storage
+            const searchCompleted = results[0].result.searchCompleted === 'true';
+            
+            // If search is in progress, update UI accordingly
+            if (searchInProgress && !searchCompleted) {
               console.log('Search is in progress, showing cancel button');
-              // If search is in progress, enable cancel button and disable start button
+              // Update UI to show search in progress
               updateSearchButtonStates(true);
               
-              // Restore search state UI
+              // Show status and progress if available
+              if (results[0].result.status) {
+                statusMessage.textContent = results[0].result.status;
+                resultsContainer.classList.remove('hidden');
+              }
+              
+              if (results[0].result.progress) {
+                progressBar.style.width = results[0].result.progress + '%';
+              }
+              
+              // Restore any search parameters
               restoreSearchState();
+              return;
+            }
+          }
+          
+          // Fall back to the message approach if script execution didn't find an active search
+          chrome.tabs.sendMessage(currentTab.id, { action: 'popupOpened' }, function(response) {
+            if (chrome.runtime.lastError) {
+              console.error('Error checking search status:', chrome.runtime.lastError);
+              // If we can't communicate with content script, try to get results from background
+              fetchResultsFromBackground();
+              return;
+            }
+            
+            console.log('Received popup opened response:', response);
+            
+            if (response) {
+              // Check for completed search flag first
+              if (response.searchCompleted) {
+                console.log('Found completed search state, showing start button');
+                // If search is completed, show start button and restore results
+                updateSearchButtonStates(false);
+                
+                // Check if the content script provided final results
+                if (response.finalResults && Array.isArray(response.finalResults) && response.finalResults.length > 0) {
+                  console.log(`Using ${response.finalResults.length} final results directly from content script`);
+                  
+                  // Clear existing results
+                  allResults = [];
+                  resultsList.innerHTML = '';
+                  
+                  // Add final results from content script
+                  response.finalResults.forEach(result => {
+                    if (!allResults.some(existing => existing.website === result.website)) {
+                      allResults.push(result);
+                      addResultToList(result);
+                    }
+                  });
+                  
+                  // Show results container and status
+                  resultsContainer.classList.remove('hidden');
+                  statusMessage.textContent = 'Search completed!';
+                  progressBar.style.width = '100%';
+                  
+                  // Save these results to local storage for future access
+                  chrome.storage.local.set({
+                    'popupResults': allResults,
+                    'popupStatus': 'Search completed!',
+                    'popupProgress': '100%',
+                    'searchCompletedTimestamp': response.searchCompletedTimestamp || Date.now()
+                  });
+                  
+                  // Enable export button
+                  exportCsvButton.disabled = allResults.length === 0;
+                } else {
+                  // If no final results in content script, fetch from background
+                  fetchResultsFromBackground();
+                }
+              }
+              // Only check for inProgress if search is not completed
+              else if (response.inProgress) {
+                console.log('Search is in progress, showing cancel button');
+                // If search is in progress, enable cancel button and disable start button
+                updateSearchButtonStates(true);
+                
+                // Restore search state UI
+                restoreSearchState();
+              } else {
+                // If no search is in progress or completed, check if we have a saved state
+                console.log('No active search, checking for previous results');
+                fetchResultsFromBackground();
+              }
             } else {
-              // If no search is in progress or completed, check if we have a saved state
-              console.log('No active search, checking for previous results');
+              // No response, fall back to background results
               fetchResultsFromBackground();
             }
-          } else {
-            // No response, fall back to background results
-            fetchResultsFromBackground();
-          }
+          });
         });
       } else {
         // Not on Google Maps, check if we have saved results
@@ -123,32 +224,140 @@ document.addEventListener('DOMContentLoaded', function() {
   
   // Function to fetch search results from background script
   function fetchResultsFromBackground() {
-    chrome.runtime.sendMessage({ action: 'getSearchResults' }, function(response) {
-      if (chrome.runtime.lastError) {
-        console.error('Error fetching search results:', chrome.runtime.lastError);
-        // Try local popup state instead
-        checkForPopupResults();
-        return;
-      }
-      
-      if (response) {
-        console.log('Retrieved search state from background:', response);
-        
-        // First check if we have any results or are still processing
-        if ((response.results && response.results.length > 0) || 
-            (response.websiteProcessingQueue && response.websiteProcessingQueue.length > 0)) {
+    // Log that we're fetching results
+    console.log('[DEBUG] Fetching results from background script...');
+    
+    // First check if we have any final results in session storage
+    // This handles the case where the popup is opened immediately after search completion
+    chrome.tabs.query({active: true, currentWindow: true}, function(tabs) {
+      const currentTab = tabs[0];
+      if (currentTab && currentTab.url && currentTab.url.includes('google.com/maps')) {
+        console.log('[DEBUG] On Google Maps page, checking session storage for final results');
+        chrome.scripting.executeScript({
+          target: { tabId: currentTab.id },
+          function: () => {
+            try {
+              // Check for final results in session storage
+              const finalResultsStr = sessionStorage.getItem('gmjs_finalResults');
+              if (finalResultsStr) {
+                try {
+                  const finalResults = JSON.parse(finalResultsStr);
+                  if (Array.isArray(finalResults) && finalResults.length > 0) {
+                    return {
+                      hasFinalResults: true,
+                      finalResults: finalResults,
+                      timestamp: sessionStorage.getItem('gmjs_searchCompletedTimestamp')
+                    };
+                  }
+                } catch (parseErr) {
+                  console.error('Error parsing final results:', parseErr);
+                }
+              }
+              return { hasFinalResults: false };
+            } catch (e) {
+              console.error('Error retrieving final results from session storage:', e);
+              return { hasFinalResults: false, error: e.message };
+            }
+          }
+        }).then(results => {
+          if (results && results[0]?.result?.hasFinalResults && results[0].result.finalResults) {
+            console.log(`Found ${results[0].result.finalResults.length} final results in session storage`);
+            
+            // Use these results directly - they're the freshest available
+            const finalResults = results[0].result.finalResults;
+            const timestamp = results[0].result.timestamp ? parseInt(results[0].result.timestamp) : Date.now();
+            
+            // Clear and display results
+            allResults = [];
+            resultsList.innerHTML = '';
+            
+            finalResults.forEach(result => {
+              if (!allResults.some(existing => existing.website === result.website)) {
+                // Make sure jobSpecificKeywords is always an array
+                if (!result.jobSpecificKeywords) {
+                  console.log(`Initializing empty jobSpecificKeywords for ${result.website} from session storage`);
+                  result.jobSpecificKeywords = [];
+                } else {
+                  console.log(`Loaded ${result.jobSpecificKeywords.length} jobSpecificKeywords for ${result.website} from session storage: ${result.jobSpecificKeywords.join(', ')}`);
+                }
+                allResults.push(result);
+                addResultToList(result);
+              }
+            });
+            
+            // Update local storage with these results
+            chrome.storage.local.set({
+              'popupResults': allResults,
+              'popupStatus': 'Search completed!',
+              'popupProgress': '100%',
+              'searchCompletedTimestamp': timestamp
+            });
+            
+            // Show the results container and set status
+            resultsContainer.classList.remove('hidden');
+            statusMessage.textContent = 'Search completed!';
+            progressBar.style.width = '100%';
+            
+            // Set correct button state
+            updateSearchButtonStates(false);
+            
+            // Enable export button
+            exportCsvButton.disabled = allResults.length === 0;
+            
+            // We're done, no need to proceed to background script query
+            return;
+          }
           
-          displayBackgroundResults(response);
-        } else {
-          // If no results from background, check if we have saved popup results
-          checkForPopupResults();
-        }
+          // Proceed to background query if no session storage results
+          proceedToBackgroundQuery();
+        }).catch(error => {
+          console.error('Error executing script to retrieve final results:', error);
+          proceedToBackgroundQuery();
+        });
       } else {
-        // If no response, check for popup results
-        checkForPopupResults();
+        // Not on Google Maps, just query background
+        proceedToBackgroundQuery();
       }
     });
+    
+    function proceedToBackgroundQuery() {
+      // Request both search results and completion timestamp
+      chrome.runtime.sendMessage({ 
+        action: 'getSearchResults',
+        includeTimestamps: true,
+        forceLatestResults: true
+      }, function(response) {
+        if (chrome.runtime.lastError) {
+          console.error('Error fetching search results:', chrome.runtime.lastError);
+          // Try local popup state instead
+          checkForPopupResults();
+          return;
+        }
+        
+        if (response) {
+          console.log('Retrieved search state from background:', 
+            `${response.results ? response.results.length : 0} results, ` +
+            `status: ${response.status}, ` +
+            `completed: ${response.searchCompletedTimestamp ? 'yes' : 'no'}`
+          );
+          
+          // First check if we have any results or are still processing
+          if ((response.results && response.results.length > 0) || 
+              (response.websiteProcessingQueue && response.websiteProcessingQueue.length > 0)) {
+            
+            displayBackgroundResults(response);
+          } else {
+            // If no results from background, check if we have saved popup results
+            checkForPopupResults();
+          }
+        } else {
+          // If no response, check for popup results
+          checkForPopupResults();
+        }
+      });
+    }
   }
+  
   
   // Function to check for popup-specific saved results
   function checkForPopupResults() {
@@ -163,7 +372,8 @@ document.addEventListener('DOMContentLoaded', function() {
               return {
                 status: sessionStorage.getItem('gmjs_contentStatus'),
                 progress: sessionStorage.getItem('gmjs_contentProgress'),
-                searchCompleted: sessionStorage.getItem('gmjs_searchCompleted')
+                searchCompleted: sessionStorage.getItem('gmjs_searchCompleted'),
+                searchCompletedTimestamp: sessionStorage.getItem('gmjs_searchCompletedTimestamp')
               };
             } catch (e) {
               console.error('Error retrieving status from session storage:', e);
@@ -248,7 +458,7 @@ document.addEventListener('DOMContentLoaded', function() {
   
   // Helper function to check local storage for saved results
   function checkLocalStorageResults() {
-    chrome.storage.local.get(['popupResults', 'popupStatus', 'popupProgress', 'searchResults', 'searchStatus', 'processingInProgress'], function(data) {
+    chrome.storage.local.get(['popupResults', 'popupStatus', 'popupProgress', 'searchResults', 'searchStatus', 'processingInProgress', 'searchCompletedTimestamp', 'lastUpdated'], function(data) {
       if (data.popupResults && data.popupResults.length > 0) {
         console.log('Retrieved popup-specific saved results:', data);
         
@@ -268,19 +478,31 @@ document.addEventListener('DOMContentLoaded', function() {
               function: () => {
                 try {
                   return {
-                    searchCompleted: sessionStorage.getItem('gmjs_searchCompleted')
+                    searchCompleted: sessionStorage.getItem('gmjs_searchCompleted'),
+                    searchCompletedTimestamp: sessionStorage.getItem('gmjs_searchCompletedTimestamp')
                   };
                 } catch (e) {
                   console.error('Error retrieving completed flag from session storage:', e);
-                  return { searchCompleted: null };
+                  return { searchCompleted: null, searchCompletedTimestamp: null };
                 }
               }
             }).then(results => {
-              // If we have a completed flag in session storage, always use that as source of truth
-              if (results && results[0]?.result?.searchCompleted === 'true') {
+              const sessionStorageCompleted = results && results[0]?.result?.searchCompleted === 'true';
+              const sessionStorageTimestamp = results && results[0]?.result?.searchCompletedTimestamp ? 
+                parseInt(results[0].result.searchCompletedTimestamp) : 0;
+              const localStorageTimestamp = data.searchCompletedTimestamp || 0;
+              
+              console.log('Search completion timestamps - Session:', sessionStorageTimestamp, 'Local:', localStorageTimestamp);
+              
+              // Use the most recent completed state based on timestamps
+              if (sessionStorageCompleted && (sessionStorageTimestamp >= localStorageTimestamp)) {
+                console.log('Using session storage completion state (more recent)');
+                setCompletedState();
+              } else if (data.searchCompletedTimestamp) {
+                console.log('Using local storage completion state (more recent)');
                 setCompletedState();
               } else {
-                // Otherwise, fall back to local storage logic
+                // If neither has a valid timestamp, fall back to local storage logic
                 checkLocalStorageFallback();
               }
             }).catch(err => {
@@ -295,9 +517,21 @@ document.addEventListener('DOMContentLoaded', function() {
         
         // Fallback function to determine status from local storage
         function checkLocalStorageFallback() {
+          // Check if search completed according to the timestamp
+          const hasCompletionTimestamp = data.searchCompletedTimestamp !== undefined && 
+                                        data.searchCompletedTimestamp !== null;
+          
           // Check if search is still in progress according to background script
           const isStillProcessing = data.processingInProgress === true && 
-                                   !(data.searchStatus === 'complete' || data.searchStatus === 'cancelled');
+                                   !(data.searchStatus === 'complete' || data.searchStatus === 'cancelled') &&
+                                   !hasCompletionTimestamp;
+          
+          // If we have a completion timestamp, the search is definitely complete
+          if (hasCompletionTimestamp) {
+            correctStatus = 'Search completed!';
+            setStatus(correctStatus, false);
+            return;
+          }
           
           // If a search was previously completed, never show "Starting to process..." message
           // This prevents the "stuck" message issue when refreshing the page
@@ -366,8 +600,12 @@ document.addEventListener('DOMContentLoaded', function() {
     
     let isProcessing = false; // Flag to track if search is still in progress
     
+    // Check for completion timestamp first as it's the most reliable indicator
+    const hasCompletionTimestamp = response.searchCompletedTimestamp !== undefined && 
+                                  response.searchCompletedTimestamp !== null;
+                                  
     // Handle different search statuses
-    if (response.status === 'complete') {
+    if (hasCompletionTimestamp || response.status === 'complete') {
       statusMessage.textContent = 'Search completed!';
       progressBar.style.width = '100%';
     } else if (response.status === 'processing') {
@@ -409,7 +647,11 @@ document.addEventListener('DOMContentLoaded', function() {
     }
 
     // Explicitly check the processingInProgress flag from the background
-    if (response.processingInProgress === true) {
+    // But override it if we have a completion timestamp
+    if (response.searchCompletedTimestamp) {
+      isProcessing = false;
+      console.log('Found completion timestamp, search is definitely complete');
+    } else if (response.processingInProgress === true) {
       isProcessing = true;
       console.log('Background indicates search is still in progress');
     }
@@ -420,11 +662,20 @@ document.addEventListener('DOMContentLoaded', function() {
     // Clear any existing results
     resultsList.innerHTML = '';
     
+    // Log the results count for debugging
+    console.log(`Displaying background results: ${(response.results || []).length} results, timestamp: ${response.searchCompletedTimestamp || 'none'}`);
+    
     // Combine results from both completed results and in-progress items in the queue
     allResults = [...(response.results || [])];
     
+    if (allResults.length === 0) {
+      console.log('No results found in response.results, checking other sources...');
+    }
+    
     // Check if there are any items in the processing queue that should be displayed
     if (response.websiteProcessingQueue && response.websiteProcessingQueue.length > 0) {
+      console.log(`Found ${response.websiteProcessingQueue.length} items in processing queue`);
+      
       // Find queue items that have some information but might not be in the results array yet
       response.websiteProcessingQueue.forEach(queueItem => {
         // Check if this item is not already in allResults
@@ -444,6 +695,7 @@ document.addEventListener('DOMContentLoaded', function() {
               address: queueItem.address || "",
               website: queueItem.website,
               jobKeywords: queueItem.jobKeywords || [],
+              jobSpecificKeywords: queueItem.jobSpecificKeywords || [], // Ensure this field is included
               contactEmail: queueItem.contactEmail,
               contactPage: queueItem.contactPage,
               jobPages: queueItem.jobPages || [],
@@ -457,6 +709,16 @@ document.addEventListener('DOMContentLoaded', function() {
       });
     }
     
+    // Ensure all results have jobSpecificKeywords properly initialized
+    allResults.forEach(result => {
+      if (!result.jobSpecificKeywords) {
+        console.log(`[DEBUG] Initializing empty jobSpecificKeywords for ${result.website} in displayBackgroundResults`);
+        result.jobSpecificKeywords = [];
+      } else {
+        console.log(`[DEBUG] Found ${result.jobSpecificKeywords.length} jobSpecificKeywords for ${result.website} in background results: ${result.jobSpecificKeywords.join(', ')}`);
+      }
+    });
+    
     // Display each result
     allResults.forEach(result => {
       addResultToList(result);
@@ -465,13 +727,43 @@ document.addEventListener('DOMContentLoaded', function() {
     // Enable export button if we have results
     exportCsvButton.disabled = allResults.length === 0;
     
+    // If we still don't have results but there are some in storage, try to load them
+    if (allResults.length === 0) {
+      console.log('No results after processing queue, checking popupResults in storage');
+      chrome.storage.local.get(['popupResults'], function(data) {
+        if (data.popupResults && data.popupResults.length > 0) {
+          console.log(`Found ${data.popupResults.length} results in popupResults storage`);
+          allResults = data.popupResults;
+          
+          // Ensure all results have jobSpecificKeywords properly initialized
+          allResults.forEach(result => {
+            if (!result.jobSpecificKeywords) {
+              console.log(`[DEBUG] Initializing empty jobSpecificKeywords for ${result.website} from popupResults storage`);
+              result.jobSpecificKeywords = [];
+            } else {
+              console.log(`[DEBUG] Found ${result.jobSpecificKeywords.length} jobSpecificKeywords for ${result.website} in popupResults: ${result.jobSpecificKeywords.join(', ')}`);
+            }
+          });
+          
+          // Display these results
+          allResults.forEach(result => {
+            addResultToList(result);
+          });
+          
+          // Enable export button
+          exportCsvButton.disabled = false;
+        }
+      });
+    }
+    
     // When we have results in the background, also save them to popup-specific storage
     // This ensures we have a fallback copy
     if (allResults.length > 0) {
       chrome.storage.local.set({
         'popupResults': allResults,
         'popupStatus': statusMessage.textContent,
-        'popupProgress': progressBar.style.width
+        'popupProgress': progressBar.style.width,
+        'searchCompletedTimestamp': response.searchCompletedTimestamp || null
       });
     }
   }
@@ -540,6 +832,16 @@ document.addEventListener('DOMContentLoaded', function() {
       resultsList.innerHTML = ''; // Clear current results
       allResults = state.results || [];
       
+      // Ensure all results have jobSpecificKeywords properly initialized
+      allResults.forEach(result => {
+        if (!result.jobSpecificKeywords) {
+          console.log(`Initializing empty jobSpecificKeywords for ${result.website} during restore`);
+          result.jobSpecificKeywords = [];
+        } else {
+          console.log(`Restored ${result.jobSpecificKeywords.length} jobSpecificKeywords for ${result.website}: ${result.jobSpecificKeywords.join(', ')}`);
+        }
+      });
+      
       // Display restored results
       allResults.forEach(result => {
         addResultToList(result);
@@ -564,7 +866,12 @@ document.addEventListener('DOMContentLoaded', function() {
 
   // Settings button click handler
   settingsButton.addEventListener('click', function() {
+    console.log('Settings button clicked');
+    
+    // Save current state
     saveSearchState();
+    
+    // Navigate to settings page within the same popup window
     window.location.href = 'settings.html';
   });
   
@@ -636,19 +943,15 @@ document.addEventListener('DOMContentLoaded', function() {
     });
   });
   
-  // Load saved settings
-  chrome.storage.local.get(['keywords', 'location', 'websiteKeywords', 'maxResults'], function(data) {
+  // Then load saved settings
+  chrome.storage.local.get(['keywords', 'jobKeywords', 'location', 'maxResults'], function(data) {
     if (data.keywords) keywordsInput.value = data.keywords;
+    if (data.jobKeywords) jobKeywordsInput.value = data.jobKeywords;
     if (data.location) locationInput.value = data.location;
     if (data.maxResults) maxResultsInput.value = data.maxResults;
-    if (data.websiteKeywords) {
-      websiteKeywordsInput.value = data.websiteKeywords;
-    } else {
-      // Set default website keywords if none are saved
-      websiteKeywordsInput.value = DEFAULT_WEBSITE_KEYWORDS.join(', ');
-      // Save the defaults
-      saveWebsiteKeywords();
-    }
+    
+    // Note: websiteKeywords are loaded separately at the top of the file
+    console.log("Loaded general settings from storage");
   });
   
   // Save settings when inputs change
@@ -660,21 +963,64 @@ document.addEventListener('DOMContentLoaded', function() {
     });
   }
   
+  // Save job keywords separately
+  function saveJobKeywords() {
+    chrome.storage.local.set({
+      jobKeywords: jobKeywordsInput.value
+    });
+  }
+  
+  // Save max results separately
+  function saveMaxResults() {
+    chrome.storage.local.set({
+      maxResults: maxResultsInput.value
+    });
+  }
+  
   // Save website keywords separately
   function saveWebsiteKeywords() {
+    // If the input is empty, use the defaults
+    const valueToSave = websiteKeywordsInput.value.trim() !== '' 
+      ? websiteKeywordsInput.value 
+      : DEFAULT_WEBSITE_KEYWORDS.join(', ');
+      
+    // Always use the value we're saving (could be different from input)
+    websiteKeywordsInput.value = valueToSave;
+    
     chrome.storage.local.set({
-      websiteKeywords: websiteKeywordsInput.value
+      websiteKeywords: valueToSave
     });
   }
   
   keywordsInput.addEventListener('change', saveSettings);
   locationInput.addEventListener('change', saveSettings);
+  jobKeywordsInput.addEventListener('change', saveJobKeywords);
+  maxResultsInput.addEventListener('change', saveMaxResults);
   websiteKeywordsInput.addEventListener('change', saveWebsiteKeywords);
   
   // Reset website keywords to defaults
   resetWebsiteKeywordsButton.addEventListener('click', function() {
-    websiteKeywordsInput.value = DEFAULT_WEBSITE_KEYWORDS.join(', ');
-    saveWebsiteKeywords();
+    console.log("Reset website keywords button clicked");
+    
+    // Get the defaults directly from the constant
+    const defaultKeywords = DEFAULT_WEBSITE_KEYWORDS.join(', ');
+    
+    // Update UI immediately
+    websiteKeywordsInput.value = defaultKeywords;
+    
+    // Flash effect to indicate reset
+    websiteKeywordsInput.style.backgroundColor = '#e6f7ff';
+    setTimeout(() => {
+      websiteKeywordsInput.style.backgroundColor = '';
+    }, 300);
+    
+    // Save the updated website keywords
+    chrome.storage.local.set({
+      websiteKeywords: defaultKeywords
+    }, function() {
+      console.log('Default website keywords restored successfully');
+      alert('Website keywords have been reset to defaults!');
+    });
   });
   
   // CSV Export functionality
@@ -723,8 +1069,11 @@ document.addEventListener('DOMContentLoaded', function() {
       'Address',
       'Website',
       'Job Keywords',
+      'High Priority Keywords',
       'Contact Email',
       'Contact Page',
+      'Career Page',
+      'Job Site Links',
       'Last Checked'
     ];
     
@@ -747,8 +1096,11 @@ document.addEventListener('DOMContentLoaded', function() {
         escapeForCsv(result.address || ''),
         escapeForCsv(result.website || ''),
         escapeForCsv(result.jobKeywords ? result.jobKeywords.join('; ') : ''),
+        escapeForCsv(result.jobSpecificKeywords ? result.jobSpecificKeywords.join('; ') : ''),
         escapeForCsv(result.contactEmail || ''),
         escapeForCsv(result.contactPage || ''),
+        escapeForCsv(result.careerPage || ''),
+        escapeForCsv(result.jobSiteLinks ? result.jobSiteLinks.map(site => `${site.name}: ${site.url}`).join('; ') : ''),
         result.lastChecked ? new Date(result.lastChecked).toLocaleString() : ''
       ];
       
@@ -797,12 +1149,15 @@ document.addEventListener('DOMContentLoaded', function() {
   
   // Start search button click handler
   startSearchButton.addEventListener('click', function() {
+    console.log("Start search button clicked");
+    
     const keywords = keywordsInput.value.trim();
     if (!keywords) {
       alert('Please enter at least one keyword');
       return;
     }
     
+    // Save settings first
     saveSettings();
     saveWebsiteKeywords();
     
@@ -851,11 +1206,17 @@ document.addEventListener('DOMContentLoaded', function() {
                     ? websiteKeywordsInput.value.split(',').map(k => k.trim())
                     : DEFAULT_WEBSITE_KEYWORDS;
                     
+                  // Get job keywords
+                  const jobKeywords = jobKeywordsInput.value.trim()
+                    ? jobKeywordsInput.value.split(',').map(k => k.trim())
+                    : [];
+                    
                   // Set search data
                   const searchData = {
                     keywords: keywords.split(',').map(k => k.trim()),
                     location: locationInput.value.trim(),
                     websiteKeywords: websiteKeywords,
+                    jobKeywords: jobKeywords, // Add job-specific keywords
                     maxResults: parseInt(maxResultsInput.value) || 20
                   };
                   
@@ -956,13 +1317,221 @@ document.addEventListener('DOMContentLoaded', function() {
       statusMessage.textContent = 'Search completed!';
       progressBar.style.width = '100%';
       
+      const completedTimestamp = message.completedTimestamp || Date.now();
+      console.log('Search completed with timestamp: ' + completedTimestamp);
+      
+      // If final results are included, update our results array
+      if (message.finalResults && Array.isArray(message.finalResults)) {
+        console.log(`Received ${message.finalResults.length} final results with search completion`);
+        
+        // Clear existing results first
+        allResults = [];
+        resultsList.innerHTML = '';
+        
+        // Add all final results
+        if (message.finalResults.length > 0) {
+          message.finalResults.forEach(result => {
+            // Only add if it's not a duplicate
+            if (!allResults.some(existing => existing.website === result.website)) {
+              allResults.push(result);
+              addResultToList(result);
+            }
+          });
+          
+          console.log(`Added ${allResults.length} final results to display`);
+        } else {
+          console.warn('Received empty finalResults array in searchComplete message');
+          
+          // Try to get results from background script as a fallback
+          chrome.runtime.sendMessage({ 
+            action: 'getSearchResults',
+            includeTimestamps: true,
+            forceLatestResults: true
+          }, function(response) {
+            if (response && response.results && response.results.length > 0) {
+              console.log(`Retrieved ${response.results.length} results from background as fallback`);
+              
+              // Clear again just to be safe
+              allResults = [];
+              resultsList.innerHTML = '';
+              
+              // Add results from background
+              response.results.forEach(result => {
+                if (!allResults.some(existing => existing.website === result.website)) {
+                  allResults.push(result);
+                  addResultToList(result);
+                }
+              });
+              
+              console.log(`Added ${allResults.length} results from background as fallback`);
+              
+              // Save these results to local storage
+              saveResultsToStorage(allResults, completedTimestamp);
+            }
+          });
+        }
+        
+        // Save the final results to local storage and session storage for future access
+        saveResultsToStorage(allResults, completedTimestamp);
+        
+        // Also try to save results to session storage via content script
+        chrome.tabs.query({active: true, currentWindow: true}, function(tabs) {
+          const currentTab = tabs[0];
+          if (currentTab && currentTab.url && currentTab.url.includes('google.com/maps')) {
+            // We need to stringify the results for session storage
+            const resultsJson = JSON.stringify(message.finalResults);
+            
+            chrome.scripting.executeScript({
+              target: { tabId: currentTab.id },
+              function: (resultsJson, timestamp) => {
+                try {
+                  // Store the results and completion timestamp in session storage
+                  sessionStorage.setItem('gmjs_finalResults', resultsJson);
+                  sessionStorage.setItem('gmjs_searchCompletedTimestamp', timestamp);
+                  return true;
+                } catch (e) {
+                  console.error('Error saving final results to session storage:', e);
+                  return false;
+                }
+              },
+              args: [resultsJson, completedTimestamp.toString()]
+            }).catch(err => {
+              console.error('Error executing script to save final results:', err);
+            });
+          }
+        });
+      } else {
+        console.warn('No finalResults provided with searchComplete message');
+        
+        // If we don't have finalResults, try to get results from background
+        chrome.runtime.sendMessage({ 
+          action: 'getSearchResults',
+          includeTimestamps: true,
+          forceLatestResults: true
+        }, function(response) {
+          if (response && response.results && response.results.length > 0) {
+            console.log(`Retrieved ${response.results.length} results from background`);
+            
+            // Add results from background
+            allResults = [];
+            resultsList.innerHTML = '';
+            
+            response.results.forEach(result => {
+              allResults.push(result);
+              addResultToList(result);
+            });
+            
+            // Save these results
+            saveResultsToStorage(allResults, completedTimestamp);
+          }
+        });
+      }
+      
+      // Function to save results to storage
+      function saveResultsToStorage(results, timestamp) {
+        chrome.storage.local.set({
+          'popupResults': results,
+          'popupStatus': 'Search completed!',
+          'popupProgress': '100%',
+          'searchCompletedTimestamp': timestamp
+        }, function() {
+          console.log(`Saved ${results.length} results to storage with timestamp: ${timestamp}`);
+        });
+      }
+      
       // Re-enable the search button when search is complete
       updateSearchButtonStates(false);
+      
+      // Enable export button if we have results
+      exportCsvButton.disabled = allResults.length === 0;
     } else if (message.action === 'searchCancelled') {
       statusMessage.textContent = 'Search was cancelled';
       
       // Re-enable the search button when search is cancelled
       updateSearchButtonStates(false);
+      
+      // Save the state so we show the cancelled state on popup reopen
+      if (message.searchCompletedTimestamp) {
+        chrome.storage.local.set({
+          'popupStatus': 'Search was cancelled',
+          'popupProgress': '100%',
+          'searchCompletedTimestamp': message.searchCompletedTimestamp
+        });
+      }
+    } else if (message.action === 'updateResult') {
+      // Update an existing result with new information (e.g., from job site links)
+      const existingIndex = allResults.findIndex(result => 
+        result.website === message.result.website
+      );
+      
+      if (existingIndex !== -1) {
+        // Ensure jobSpecificKeywords is always an array
+        if (!message.result.jobSpecificKeywords) {
+          console.log(`No jobSpecificKeywords in updated result for ${message.result.website}, using empty array`);
+          message.result.jobSpecificKeywords = [];
+        } else {
+          console.log(`Received ${message.result.jobSpecificKeywords.length} jobSpecificKeywords for ${message.result.website}: ${message.result.jobSpecificKeywords.join(', ')}`);
+        }
+        
+        // Update the result in our array
+        allResults[existingIndex] = message.result;
+        
+        // Update the UI by replacing the result card
+        const existingResultElements = Array.from(resultsList.children);
+        for (let i = 0; i < existingResultElements.length; i++) {
+          const resultElement = existingResultElements[i];
+          const websiteLink = resultElement.querySelector('a[href="' + message.result.website + '"]');
+          if (websiteLink) {
+            // Replace the old result with the updated one
+            const updatedResultElement = document.createElement('div');
+            addResultToList(message.result, updatedResultElement);
+            resultsList.replaceChild(updatedResultElement.firstChild, resultElement);
+            break;
+          }
+        }
+        
+        // Save the updated results to storage to preserve them when popup reopens
+        console.log('Saving updated results to storage after external search');
+        
+        // Get the current timestamp or use current time
+        const timestamp = Date.now();
+        
+        // Save to local storage for persistence, including completion timestamp
+        chrome.storage.local.set({
+          'popupResults': allResults,
+          'popupStatus': 'Search completed!',
+          'popupProgress': '100%',
+          'searchCompletedTimestamp': timestamp
+        }, function() {
+          console.log(`Saved ${allResults.length} results to local storage with timestamp: ${timestamp}`);
+        });
+        
+        // Also update in session storage if on a Google Maps page
+        chrome.tabs.query({active: true, currentWindow: true}, function(tabs) {
+          const currentTab = tabs[0];
+          if (currentTab && currentTab.url && currentTab.url.includes('google.com/maps')) {
+            chrome.scripting.executeScript({
+              target: { tabId: currentTab.id },
+              function: (resultsJson, timestamp) => {
+                try {
+                  // Update the final results and timestamp in session storage
+                  sessionStorage.setItem('gmjs_finalResults', resultsJson);
+                  sessionStorage.setItem('gmjs_searchCompletedTimestamp', timestamp);
+                  return true;
+                } catch (e) {
+                  console.error('Error updating final results in session storage:', e);
+                  return false;
+                }
+              },
+              args: [JSON.stringify(allResults), timestamp.toString()]
+            }).then(() => {
+              console.log('Updated session storage with latest results');
+            }).catch(err => {
+              console.error('Error executing script to update session storage:', err);
+            });
+          }
+        });
+      }
     }
     
     sendResponse({received: true});
@@ -970,7 +1539,7 @@ document.addEventListener('DOMContentLoaded', function() {
   });
   
   // Function to add a result to the results list
-  function addResultToList(result) {
+  function addResultToList(result, container = resultsList) {
     const resultItem = document.createElement('div');
     resultItem.className = 'result-item';
     
@@ -1011,16 +1580,40 @@ document.addEventListener('DOMContentLoaded', function() {
         const email = document.createElement('p');
         email.innerHTML = '<strong>Contact:</strong> <a href="mailto:' + result.contactEmail + '">' + result.contactEmail + '</a>';
         resultItem.appendChild(email);
-      } else if (result.contactPage) {
+      }
+      
+      if (result.contactPage) {
         const contactPage = document.createElement('p');
         contactPage.innerHTML = '<strong>Contact page:</strong> <a href="' + result.contactPage + '" target="_blank">View</a>';
         resultItem.appendChild(contactPage);
+      }
+      
+      if (result.careerPage) {
+        const careerPage = document.createElement('p');
+        careerPage.innerHTML = '<strong>Career page:</strong> <a href="' + result.careerPage + '" target="_blank">View</a>';
+        resultItem.appendChild(careerPage);
       }
       
       if (result.jobKeywords && result.jobKeywords.length > 0) {
         const keywords = document.createElement('p');
         keywords.innerHTML = '<strong>Found keywords:</strong> ' + result.jobKeywords.join(', ');
         resultItem.appendChild(keywords);
+      }
+      
+      // Display job-specific keywords if available (highlighted with higher importance)
+      if (result.jobSpecificKeywords && result.jobSpecificKeywords.length > 0) {
+        console.log(`[DEBUG] Adding high priority matches for ${result.website}: ${result.jobSpecificKeywords.join(', ')}`);
+        const jobSpecificKeywords = document.createElement('p');
+        jobSpecificKeywords.className = 'job-specific-keywords';
+        jobSpecificKeywords.innerHTML = '<strong>High priority matches:</strong> <span class="highlight">' + 
+          result.jobSpecificKeywords.join('</span>, <span class="highlight">') + '</span>';
+        resultItem.appendChild(jobSpecificKeywords);
+      } else {
+        console.log(`[DEBUG] No high priority matches for ${result.website}. jobSpecificKeywords value:`, 
+                    result.jobSpecificKeywords === undefined ? 'undefined' : 
+                    result.jobSpecificKeywords === null ? 'null' : 
+                    Array.isArray(result.jobSpecificKeywords) ? `empty array [${result.jobSpecificKeywords.length}]` : 
+                    typeof result.jobSpecificKeywords);
       }
       
       // Display job listings if available
@@ -1062,6 +1655,32 @@ document.addEventListener('DOMContentLoaded', function() {
         jobListingsSection.appendChild(jobListingsList);
         resultItem.appendChild(jobListingsSection);
       }
+      
+      // Display job site links if available (new section)
+      if (result.jobSiteLinks && result.jobSiteLinks.length > 0) {
+        const jobSiteSection = document.createElement('div');
+        jobSiteSection.className = 'job-site-links-section';
+        
+        const jobSiteHeader = document.createElement('p');
+        jobSiteHeader.innerHTML = `<strong>Found ${result.jobSiteLinks.length} job site link(s):</strong>`;
+        jobSiteSection.appendChild(jobSiteHeader);
+        
+        const jobSiteList = document.createElement('ul');
+        jobSiteList.className = 'job-site-links-list';
+        
+        result.jobSiteLinks.forEach(site => {
+          const siteItem = document.createElement('li');
+          siteItem.className = 'job-site-item';
+          
+          const siteName = site.name || 'Job Board';
+          siteItem.innerHTML = `<a href="${site.url}" target="_blank">${siteName}</a>`;
+          
+          jobSiteList.appendChild(siteItem);
+        });
+        
+        jobSiteSection.appendChild(jobSiteList);
+        resultItem.appendChild(jobSiteSection);
+      }
     }
     
     // Create footer section with date and score
@@ -1097,6 +1716,6 @@ document.addEventListener('DOMContentLoaded', function() {
     
     resultItem.appendChild(resultFooter);
     
-    resultsList.appendChild(resultItem);
+    container.appendChild(resultItem);
   }
 });

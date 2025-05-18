@@ -1,4 +1,9 @@
 // Background script for Hidden Job Search Helper extension
+
+// Import helper scripts
+importScripts('helpers.js');
+importScripts('career-page-helpers.js');
+
 let activeTabId = null;
 let websiteProcessingQueue = [];
 let processingInProgress = false;
@@ -80,8 +85,21 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   } else if (message.action === 'searchComplete') {
     // Forward completion message to popup
     searchStatus = 'complete';
+    
+    // Update the search results if provided with final results
+    if (message.finalResults && Array.isArray(message.finalResults)) {
+      searchResults = message.finalResults;
+    }
+    
+    // Store the updated state with completion info
     storeSearchState();
-    forwardMessageToPopup(message);
+    
+    // Forward the completion message and current timestamp to popup
+    forwardMessageToPopup({
+      ...message,
+      completedTimestamp: Date.now()
+    });
+    
     sendResponse({ received: true });
     return true;
   } else if (message.action === 'addResult') {
@@ -92,20 +110,99 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     forwardMessageToPopup(message);
     sendResponse({ received: true });
     return true;
+  } else if (message.action === 'updateResult') {
+    // Update an existing result and forward to popup
+    forwardMessageToPopup(message);
+    // Store updated results
+    storeSearchState();
+    sendResponse({ received: true });
+    return true;
   } else if (message.action === 'getSearchResults') {
     // Get search results from storage if they exist
-    chrome.storage.local.get(['searchResults', 'searchStatus', 'detailedStatusMessage', 'websiteProcessingQueue', 'processingInProgress', 'maxResultsLimit'], function(data) {
-      if (data.searchResults) {
+    const keysToGet = [
+      'searchResults', 
+      'popupResults',
+      'searchStatus', 
+      'detailedStatusMessage', 
+      'websiteProcessingQueue', 
+      'processingInProgress', 
+      'maxResultsLimit'
+    ];
+    
+    // Add timestamps if requested
+    if (message.includeTimestamps) {
+      keysToGet.push('searchCompletedTimestamp', 'lastUpdated');
+    }
+    
+    chrome.storage.local.get(keysToGet, function(data) {
+      console.log(`getSearchResults: In-memory has ${searchResults.length} results, storage has ${(data.searchResults || []).length} results, popupResults has ${(data.popupResults || []).length} results`);
+      
+      // Determine which results to use - in-memory are the most recent
+      let resultsToReturn = [];
+      
+      if (searchResults.length > 0) {
+        // First priority: use in-memory results
+        resultsToReturn = searchResults;
+        console.log('Using in-memory results (most recent): ' + searchResults.length);
+      } else if (message.forceLatestResults) {
+        // If we're forcing latest results, use the larger set of results
+        const useSearchResults = data.searchResults && data.searchResults.length > 0;
+        const usePopupResults = data.popupResults && data.popupResults.length > 0;
+        
+        if (useSearchResults && usePopupResults) {
+          if (data.searchResults.length >= data.popupResults.length) {
+            console.log('Using searchResults (larger): ' + data.searchResults.length);
+            resultsToReturn = data.searchResults;
+          } else {
+            console.log('Using popupResults (larger): ' + data.popupResults.length);
+            resultsToReturn = data.popupResults;
+          }
+        } else if (useSearchResults) {
+          console.log('Using searchResults (only option): ' + data.searchResults.length);
+          resultsToReturn = data.searchResults;
+        } else if (usePopupResults) {
+          console.log('Using popupResults (only option): ' + data.popupResults.length);
+          resultsToReturn = data.popupResults;
+        } else {
+          console.log('No results found in storage');
+          resultsToReturn = [];
+        }
+      } else {
+        // Otherwise use search results with fallback to popup results
+        resultsToReturn = data.searchResults || data.popupResults || [];
+      }
+      
+      if (resultsToReturn.length > 0) {
+        // Ensure all results have jobSpecificKeywords properly initialized
+        resultsToReturn.forEach(result => {
+          if (!result.jobSpecificKeywords) {
+            console.log(`[DEBUG] Initializing empty jobSpecificKeywords for ${result.website} in getSearchResults response`);
+            result.jobSpecificKeywords = [];
+          } else {
+            console.log(`[DEBUG] Found ${result.jobSpecificKeywords.length} jobSpecificKeywords for ${result.website} in stored results: ${result.jobSpecificKeywords.join(', ')}`);
+          }
+        });
+        
         sendResponse({ 
-          results: data.searchResults,
+          results: resultsToReturn,
           status: data.searchStatus || 'unknown',
           detailedStatusMessage: data.detailedStatusMessage || '',
           websiteProcessingQueue: data.websiteProcessingQueue || [],
           processingInProgress: data.processingInProgress || false,
-          maxResultsLimit: data.maxResultsLimit || 20
+          maxResultsLimit: data.maxResultsLimit || 20,
+          searchCompletedTimestamp: data.searchCompletedTimestamp || null,
+          lastUpdated: data.lastUpdated || null
         });
       } else {
         // Fall back to in-memory results
+        // Ensure all in-memory results have jobSpecificKeywords
+        searchResults.forEach(result => {
+          if (!result.jobSpecificKeywords) {
+            console.log(`[DEBUG] Initializing empty jobSpecificKeywords for ${result.website} in in-memory results`);
+            result.jobSpecificKeywords = [];
+          }
+        });
+        
         sendResponse({ 
           results: searchResults,
           status: searchStatus,
@@ -137,6 +234,9 @@ function storeSearchState() {
     detailedStatus = lastStatusMessage;
   }
 
+  const currentTime = Date.now();
+  const isComplete = searchStatus === 'complete' || searchStatus === 'cancelled';
+
   chrome.storage.local.set({
     searchResults: searchResults,
     searchStatus: searchStatus,
@@ -144,11 +244,12 @@ function storeSearchState() {
     websiteProcessingQueue: websiteProcessingQueue,
     processingInProgress: processingInProgress,
     maxResultsLimit: maxResultsLimit,
-    lastUpdated: new Date().getTime(),
+    lastUpdated: currentTime,
+    searchCompletedTimestamp: isComplete ? currentTime : null,
     // Also store as popupResults for popup-specific state management
     popupResults: searchResults,
-    popupStatus: detailedStatus,
-    popupProgress: processingInProgress ? '50%' : '100%'
+    popupStatus: isComplete ? 'Search completed!' : detailedStatus,
+    popupProgress: isComplete ? '100%' : (processingInProgress ? '50%' : '100%')
   });
 }
 
@@ -223,8 +324,19 @@ function cacheWebsiteResult(url, result) {
 
 // Process the next website in the queue
 function processNextWebsite(searchData) {
+  // Safety check to ensure websiteProcessingQueue is defined and valid
+  if (!websiteProcessingQueue || !Array.isArray(websiteProcessingQueue) || websiteProcessingQueue.length === 0) {
+    console.error('Error: websiteProcessingQueue is undefined, not an array, or empty');
+    // Reset the processing state
+    processingInProgress = false;
+    searchStatus = 'complete';
+    storeSearchState();
+    return;
+  }
+  
   // Check if there are any unprocessed websites
-  const nextWebsiteIndex = websiteProcessingQueue.findIndex(site => !site.processed);
+  // Filter out any undefined elements before calling findIndex
+  const nextWebsiteIndex = websiteProcessingQueue.findIndex(site => site && !site.processed);
   
   if (nextWebsiteIndex === -1) {
     // All websites processed
@@ -238,9 +350,17 @@ function processNextWebsite(searchData) {
       });
     }
     
-    // Send completion message to popup
+    // Set search as complete
+    searchStatus = 'complete';
+    
+    // Store the final state with all search results
+    storeSearchState();
+    
+    // Send completion message to popup with all results
     forwardMessageToPopup({
-      action: 'searchComplete'
+      action: 'searchComplete',
+      finalResults: searchResults,
+      completedTimestamp: Date.now()
     });
     
     return;
@@ -252,9 +372,11 @@ function processNextWebsite(searchData) {
   console.log('Processing website with name:', website.businessName);
   
   // Update progress - show current website being processed
-  const processedCount = websiteProcessingQueue.filter(site => site.processed).length;
+  // Add safety check for when filtering sites
+  const processedCount = websiteProcessingQueue.filter(site => site && site.processed).length;
   const totalCount = Math.min(websiteProcessingQueue.length, maxResultsLimit);
-  const progress = 50 + ((processedCount / totalCount) * 50);
+  // Prevent division by zero
+  const progress = totalCount > 0 ? 50 + ((processedCount / totalCount) * 50) : 50;
   
   forwardMessageToPopup({
     action: 'updateProgress',
@@ -315,19 +437,34 @@ function processWebsiteWithTab(website, nextWebsiteIndex, searchData) {
             // Cache the result for future use
             cacheWebsiteResult(website.website, result);
             
+            // Process job site links if found
+            const jobSiteLinks = result.jobSiteLinks || [];
+            console.log('Job site links found:', jobSiteLinks);
+            
+            // Create a complete result object to use for updates later
+            const completeResult = {
+              ...website,
+              ...result,
+              processed: true
+            };
+            
             // If job keywords or contact info was found, add to results
             if ((result.jobKeywords && result.jobKeywords.length > 0) || 
                 result.contactEmail || result.contactPage ||
-                (result.jobListings && result.jobListings.length > 0)) {
+                (result.jobListings && result.jobListings.length > 0) ||
+                (result.jobSiteLinks && result.jobSiteLinks.length > 0)) {
               const completeResult = {
                 businessName: website.businessName || "Unknown Business",
                 address: website.address || "",
                 website: website.website,
                 jobKeywords: result.jobKeywords || [],
+                jobSpecificKeywords: result.jobSpecificKeywords || [], // Include job-specific keywords
                 contactEmail: result.contactEmail,
                 contactPage: result.contactPage,
+                careerPage: result.careerPage, // Add separate career page field
                 jobPages: result.jobPages || [],
                 jobListings: result.jobListings || [],
+                jobSiteLinks: result.jobSiteLinks || [], // Include job site links
                 score: result.score || 0,
                 lastChecked: result.lastChecked
               };
@@ -339,6 +476,32 @@ function processWebsiteWithTab(website, nextWebsiteIndex, searchData) {
                 action: 'addResult',
                 result: completeResult
               });
+              
+              // Process job site links if found
+              if (jobSiteLinks && jobSiteLinks.length > 0) {
+                console.log(`Processing ${Math.min(jobSiteLinks.length, 2)} job site links for ${website.businessName}`);
+                console.log('Job site links details:', JSON.stringify(jobSiteLinks.slice(0, 2)));
+                
+                // Process job links in a timeout to allow the main site processing to complete first
+                setTimeout(() => {
+                  processJobSiteLinks(jobSiteLinks.slice(0, 2), website, completeResult, searchData, nextWebsiteIndex);
+                }, 500);
+              }
+              
+              // Process career page(s) if found
+              if (completeResult.careerPage) {
+                console.log(`Processing career page for ${website.businessName}: ${completeResult.careerPage}`);
+                setTimeout(() => {
+                  processCareerPage(completeResult.careerPage, website, completeResult, searchData, nextWebsiteIndex);
+                }, 1000);
+              } else if (completeResult.jobPages && completeResult.jobPages.length > 0) {
+                // Process the first job page if no specific career page was identified
+                const jobPage = completeResult.jobPages[0];
+                console.log(`Processing job page for ${website.businessName}: ${jobPage.url}`);
+                setTimeout(() => {
+                  processCareerPage(jobPage.url, website, completeResult, searchData, nextWebsiteIndex);
+                }, 1000);
+              }
             }
           } else {
             // Mark as processed even if there's an error
@@ -419,13 +582,18 @@ function processWebsiteWithTab(website, nextWebsiteIndex, searchData) {
 
 // Function to be injected into each website to search for job-related content
 function searchForJobContent(website, searchData) {
+  // We'll no longer use the iframe approach to avoid refreshing issues
+  // Instead, we'll just record the job site links and let the background script handle visiting them
+
   // Result object
   const result = {
     jobKeywords: [],
+    jobSpecificKeywords: [], // New field for high-priority job keywords
     contactEmail: null,
     contactPage: null,
     jobPages: [],
     jobListings: [],
+    jobSiteLinks: [], // New field for job site links like BambooHR
     score: 0, // Initialize score
     businessName: website.businessName || "Unknown Business" // Explicitly carry over the business name
   };
@@ -444,14 +612,14 @@ function searchForJobContent(website, searchData) {
     const searchKeywords = searchData.keywords;
     
     // Define default common job-related terms to look for
-    const defaultJobTerms = [
+    const defaultWebsiteKeywords = [
       'job', 'jobs', 'career', 'careers', 'work', 'vacancy', 'vacancies',
       'hire', 'hiring', 'apply', 'application', 'position', 'spontaneous',
       'opportunity', 'employment', 'recruitment', 'join us', 'join our team',
     ];
     
     // Use custom website keywords if provided, otherwise use defaults
-    const commonJobTerms = searchData.websiteKeywords || defaultJobTerms;
+    const commonJobTerms = searchData.websiteKeywords || defaultWebsiteKeywords;
     
     // Common paths to check for careers/jobs
     const jobPaths = [
@@ -479,6 +647,31 @@ function searchForJobContent(website, searchData) {
           result.score += 20; // Add 20 points for each user keyword found on main page
         }
       }
+    }
+    
+    // Search for job-specific keywords (highest priority)
+    const jobKeywords = searchData.jobKeywords || [];
+    if (jobKeywords.length > 0) {
+      console.log(`Searching for ${jobKeywords.length} job-specific keywords on main page`);
+      
+      for (const keyword of jobKeywords) {
+        const keywordLower = keyword.toLowerCase();
+        if (pageText.includes(keywordLower)) {
+          console.log(`Found job-specific keyword on main page: ${keyword}`);
+          
+          // Add to job-specific keywords
+          result.jobSpecificKeywords.push(keyword);
+          
+          // Also add to regular job keywords for backward compatibility
+          if (!result.jobKeywords.includes(keyword)) {
+            result.jobKeywords.push(keyword);
+          }
+          
+          result.score += 40; // Add 40 points for each job-specific keyword found on main page
+        }
+      }
+      
+      console.log(`Found ${result.jobSpecificKeywords.length} job-specific keywords on main page`);
     }
     
     // Search for job links
@@ -527,150 +720,17 @@ function searchForJobContent(website, searchData) {
             title: linkText || 'Job/Career Page'
           });
           
-          // If this is the first job link, set it as the contact page for backward compatibility
-          if (!result.contactPage) {
-            result.contactPage = href;
-          }
+          // Store career/job pages separately from contact pages
+          // DO NOT set job/career pages as contact pages
+          result.careerPage = href;
           
-          // Visit the job page to search for specific keywords
+          // Store the career page to visit after initial scanning is complete
+          // We don't directly visit it here to avoid multiple tabs being opened simultaneously
+          // The actual career page processing will happen after this website's scan completes
           try {
-            // Create an iframe to load the job page
-            const iframe = document.createElement('iframe');
-            iframe.style.display = 'none';
-            document.body.appendChild(iframe);
-            
-            // Use a promise to handle the iframe loading
-            const visitJobPage = new Promise((resolve, reject) => {
-              // Set a timeout for iframe loading (5 seconds)
-              const timeout = setTimeout(() => {
-                reject(new Error('Job page iframe loading timeout'));
-              }, 5000);
-              
-              iframe.onload = () => {
-                clearTimeout(timeout);
-                try {
-                  // Get content from the iframe
-                  const iframeDoc = iframe.contentDocument || iframe.contentWindow.document;
-                  if (iframeDoc) {
-                    const jobPageText = iframeDoc.body ? iframeDoc.body.textContent.toLowerCase() : '';
-                    
-                    // Extract job listings that contain the search keywords
-                    const jobElements = Array.from(iframeDoc.querySelectorAll('div, section, article, li'));
-                    
-                    // Filter for elements that might contain job listings
-                    const potentialJobListings = jobElements.filter(element => {
-                      const elementText = element.textContent.toLowerCase();
-                      // Check if element contains job-related terms
-                      const hasJobTerms = commonJobTerms.some(term => elementText.includes(term.toLowerCase()));
-                      // Check if element contains user keywords
-                      const hasUserKeywords = searchKeywords.some(keyword => 
-                        elementText.includes(keyword.toLowerCase())
-                      );
-                      
-                      return hasJobTerms && hasUserKeywords && elementText.length > 100;
-                    });
-                    
-                    let keywordsFoundOnJobPage = false;
-                    
-                    // Process potential job listings
-                    for (const listingElement of potentialJobListings.slice(0, 5)) { // Limit to 5 listings
-                      const listingText = listingElement.textContent.trim();
-                      
-                      // Find the most likely job title - look for h tags within or nearby
-                      let jobTitle = '';
-                      const headings = listingElement.querySelectorAll('h1, h2, h3, h4, h5, h6, strong');
-                      if (headings.length > 0) {
-                        jobTitle = headings[0].textContent.trim();
-                      }
-                      
-                      // If no heading found, try to extract a title based on common patterns
-                      if (!jobTitle) {
-                        const titleMatches = listingText.match(/(?:job|position|role|vacancy|opening):\s*([^\n\.]+)/i);
-                        if (titleMatches && titleMatches[1]) {
-                          jobTitle = titleMatches[1].trim();
-                        }
-                      }
-                      
-                      // Default title if nothing found
-                      if (!jobTitle) {
-                        jobTitle = 'Job Opening';
-                      }
-                      
-                      // Find matching keywords in this listing
-                      const matchedKeywords = searchKeywords.filter(keyword => 
-                        listingText.toLowerCase().includes(keyword.toLowerCase())
-                      );
-                      
-                      // Only add if it has matching keywords
-                      if (matchedKeywords.length > 0) {
-                        result.jobListings.push({
-                          title: jobTitle,
-                          snippet: listingText.substring(0, 200) + '...',
-                          keywords: matchedKeywords,
-                          source: href
-                        });
-                        
-                        // Perfect match - highest score (100)
-                        result.score = Math.max(result.score, 100);
-                        keywordsFoundOnJobPage = true;
-                      }
-                    }
-                    
-                    // Check if we found specific keywords in the job page, even if not in specific listings
-                    let keywordMatchCount = 0;
-                    for (const keyword of searchKeywords) {
-                      if (jobPageText.includes(keyword.toLowerCase())) {
-                        if (!result.jobKeywords.includes(keyword)) {
-                          result.jobKeywords.push(keyword);
-                          keywordMatchCount++;
-                        }
-                      }
-                    }
-                    
-                    // If we found keywords on job page but not in specific listings
-                    if (keywordMatchCount > 0 && !keywordsFoundOnJobPage) {
-                      // Score 50-80 based on number of keywords found
-                      const keywordBonus = Math.min(keywordMatchCount * 15, 30);
-                      result.score = Math.max(result.score, 50 + keywordBonus);
-                    }
-                  }
-                } catch (error) {
-                  console.error('Error processing iframe content:', error);
-                } finally {
-                  resolve();
-                }
-              };
-              
-              iframe.onerror = () => {
-                clearTimeout(timeout);
-                reject(new Error('Failed to load job page in iframe'));
-              };
-              
-              // Try to load the page in the iframe
-              try {
-                iframe.src = href;
-              } catch (e) {
-                clearTimeout(timeout);
-                reject(e);
-              }
-            });
-            
-            // Wait for the page visit to complete with a timeout
-            visitJobPage.catch(error => {
-              console.error('Error visiting job page:', error);
-            }).finally(() => {
-              // Clean up the iframe
-              try {
-                if (iframe && iframe.parentNode) {
-                  iframe.parentNode.removeChild(iframe);
-                }
-              } catch (e) {
-                console.error('Error removing iframe:', e);
-              }
-            });
-            
-            // Since iframe loading is async and we need to return synchronously,
-            // we won't wait for it to complete. The results will be partial.
+            console.log(`Found career/job page: ${href} - will process after initial scan`);
+            // We've stored the href in result.careerPage and result.jobPages already
+            // So we don't need to do anything else here 
           } catch (error) {
             console.error('Error setting up job page visit:', error);
           }
@@ -688,6 +748,64 @@ function searchForJobContent(website, searchData) {
       // Use the first email found
       result.contactEmail = emailMatches[0];
       result.score += 10; // Add 10 points for having contact email
+    }
+    
+    // Search for known job site links like BambooHR, Lever, Greenhouse, etc.
+    const knownJobSites = [
+      { domain: 'bamboohr.com', name: 'BambooHR' },
+      { domain: 'lever.co', name: 'Lever' },
+      { domain: 'greenhouse.io', name: 'Greenhouse' },
+      { domain: 'workday.com', name: 'Workday' },
+      { domain: 'myworkdayjobs.com', name: 'Workday Jobs' },
+      { domain: 'taleo.net', name: 'Taleo' },
+      { domain: 'smartrecruiters.com', name: 'SmartRecruiters' },
+      { domain: 'jobvite.com', name: 'Jobvite' },
+      { domain: 'applytojob.com', name: 'ApplyToJob' },
+      { domain: 'recruitee.com', name: 'Recruitee' },
+      { domain: 'applicantstack.com', name: 'ApplicantStack' }
+    ];
+
+    // Look for links to known job sites
+    const jobSiteLinks = links.filter(link => {
+      const href = link.getAttribute('href') || '';
+      return knownJobSites.some(site => href.includes(site.domain));
+    });
+
+    // Process job site links if found
+    if (jobSiteLinks.length > 0) {
+      // Add a bonus to the score for having links to job sites
+      result.score += 25; // Significant bonus for having specific job site links
+      console.log(`Found ${jobSiteLinks.length} job site links on main page`);
+      
+      // Process up to 2 job site links
+      for (const jobSiteLink of jobSiteLinks.slice(0, 2)) {
+        let href = jobSiteLink.getAttribute('href');
+        
+        // Make sure the URL is absolute
+        if (href && !href.startsWith('http')) {
+          if (href.startsWith('/')) {
+            const url = new URL(window.location.href);
+            href = `${url.protocol}//${url.host}${href}`;
+          } else {
+            const baseUrl = window.location.href.substring(0, window.location.href.lastIndexOf('/') + 1);
+            href = baseUrl + href;
+          }
+        }
+        
+        // Determine which job site this is
+        const jobSite = knownJobSites.find(site => href.includes(site.domain));
+        const jobSiteName = jobSite ? jobSite.name : 'Job Site';
+        
+        // Add to job site links
+        result.jobSiteLinks.push({
+          url: href,
+          name: jobSiteName,
+          foundOn: 'Main Page'
+        });
+        
+        console.log(`Found job site link on main page: ${jobSiteName} at ${href}`);
+        // We'll use the tab-based approach to visit this link when main processing is complete
+      }
     }
     
     // If no email found, look for a contact page
@@ -757,6 +875,9 @@ function cancelSearchProcess() {
   processingInProgress = false;
   searchStatus = 'cancelled';
   
+  // Record the timestamp when the search was cancelled
+  const cancellationTimestamp = Date.now();
+  
   // Clear any pending timers to prevent scheduled processing
   const highestTimeoutId = setTimeout(() => {}, 0);
   for (let i = 0; i < highestTimeoutId; i++) {
@@ -764,11 +885,12 @@ function cancelSearchProcess() {
   }
   
   // First, find any tabs that were opened by our extension for website processing
-  if (websiteProcessingQueue && websiteProcessingQueue.length > 0) {
+  if (websiteProcessingQueue && Array.isArray(websiteProcessingQueue) && websiteProcessingQueue.length > 0) {
     // Only query for tabs that match websites in our queue
     const websiteUrls = websiteProcessingQueue
-      .filter(site => !site.processed)
-      .map(site => site.website);
+      .filter(site => site && !site.processed) // Check that site is defined
+      .map(site => site.website)
+      .filter(website => website); // Filter out any undefined websites
     
     if (websiteUrls.length > 0) {
       chrome.tabs.query({}, tabs => {
@@ -812,9 +934,24 @@ function cancelSearchProcess() {
   }
   
   // Send cancellation message to popup
+  // First store the final state with cancellation info before cleaning up
+  chrome.storage.local.set({
+    searchResults: searchResults,
+    searchStatus: 'cancelled',
+    detailedStatusMessage: 'Search cancelled',
+    processingInProgress: false,
+    searchCompletedTimestamp: cancellationTimestamp,
+    lastUpdated: cancellationTimestamp,
+    // Also update popup-specific state
+    popupResults: searchResults,
+    popupStatus: 'Search cancelled',
+    popupProgress: '100%'
+  });
+  
   forwardMessageToPopup({
     action: 'searchCancelled',
-    status: 'Search cancelled'
+    status: 'Search cancelled',
+    searchCompletedTimestamp: cancellationTimestamp
   });
   
   // Reset all search-related state
@@ -872,3 +1009,363 @@ chrome.runtime.onConnect.addListener((port) => {
     });
   }
 });
+
+// Process job site links by creating new tabs
+function processJobSiteLinks(jobSiteLinks, parentWebsite, parentResult, searchData, parentWebsiteIndex) {
+  if (!jobSiteLinks || jobSiteLinks.length === 0) {
+    return;
+  }
+  
+  // Get the first link to process
+  const jobSiteLink = jobSiteLinks[0];
+  const remainingLinks = jobSiteLinks.slice(1);
+  
+  console.log(`Opening job site link in new tab: ${jobSiteLink.name} - ${jobSiteLink.url}`);
+  
+  // Create a new tab to visit the job site
+  chrome.tabs.create({ 
+    url: jobSiteLink.url,
+    active: false // Open in background tab
+  }, tab => {
+    // Wait for the tab to load
+    const tabId = tab.id;
+    let loadTimeout = null;
+    let loadCompleted = false;
+    
+    // Set up a listener for when the tab completes loading
+    chrome.tabs.onUpdated.addListener(function listener(updatedTabId, changeInfo) {
+      if (updatedTabId === tabId && changeInfo.status === 'complete') {
+        loadCompleted = true;
+        // Remove this listener
+        chrome.tabs.onUpdated.removeListener(listener);
+        
+        // Clear timeout if it's still active
+        if (loadTimeout) {
+          clearTimeout(loadTimeout);
+          loadTimeout = null;
+        }
+        
+        console.log(`Tab ${tabId} for ${jobSiteLink.name} has completed loading`);
+        
+        // Give the page a moment to fully initialize (especially for JS-heavy sites)
+        setTimeout(() => {
+          // Execute script in the tab to search for job-related content on the job site
+          chrome.scripting.executeScript({
+            target: { tabId },
+            function: searchJobSiteForKeywords,
+            args: [parentWebsite, searchData, jobSiteLink]
+          }).then(results => {
+            console.log(`Script executed in job site tab, processing results...`);
+            // Process the results
+            if (results && results[0] && results[0].result) {
+              const jobSiteResult = results[0].result;
+              console.log(`Job site result for ${jobSiteLink.name}:`, jobSiteResult);
+              
+              // If keywords were found on the job site
+              if (jobSiteResult.foundKeywords && jobSiteResult.foundKeywords.length > 0) {
+                console.log(`Found ${jobSiteResult.foundKeywords.length} keywords on job site: ${jobSiteResult.foundKeywords.join(', ')}`);
+                
+                // Update the parent result with job site findings
+                parentResult.score = Math.max(parentResult.score, 100); // Set score to maximum
+                
+                // Add keywords found on job site to parent result
+                for (const keyword of jobSiteResult.foundKeywords) {
+                  if (!parentResult.jobKeywords.includes(keyword)) {
+                    parentResult.jobKeywords.push(keyword);
+                  }
+                }
+                
+                // Add job-specific keywords if found
+                if (jobSiteResult.jobSpecificKeywords && jobSiteResult.jobSpecificKeywords.length > 0) {
+                  console.log(`Found ${jobSiteResult.jobSpecificKeywords.length} job-specific keywords on job site: ${jobSiteResult.jobSpecificKeywords.join(', ')}`);
+                  console.log(`Will update result for ${parentWebsite.website} with these job-specific keywords`);
+                  
+                  // Initialize jobSpecificKeywords array if needed
+                  if (!parentResult.jobSpecificKeywords) {
+                    parentResult.jobSpecificKeywords = [];
+                    console.log('Initialized empty jobSpecificKeywords array for parent result');
+                  }
+                  
+                  // Add job-specific keywords to parent result
+                  for (const keyword of jobSiteResult.jobSpecificKeywords) {
+                    if (!parentResult.jobSpecificKeywords.includes(keyword)) {
+                      parentResult.jobSpecificKeywords.push(keyword);
+                    }
+                  }
+                  
+                  // Add bonus score for job-specific keywords
+                  const bonusPoints = Math.min(jobSiteResult.jobSpecificKeywords.length * 20, 50);
+                  parentResult.score = Math.min(parentResult.score + bonusPoints, 150);
+                  console.log(`Added ${bonusPoints} bonus points for job-specific keywords. New score: ${parentResult.score}`);
+                }
+                
+                // Add job listings found on the job site
+                if (jobSiteResult.jobListings && jobSiteResult.jobListings.length > 0) {
+                  console.log(`Found ${jobSiteResult.jobListings.length} job listings on job site`);
+                  
+                  // Initialize jobListings array if it doesn't exist
+                  if (!parentResult.jobListings) {
+                    parentResult.jobListings = [];
+                  }
+                  
+                  for (const jobListing of jobSiteResult.jobListings) {
+                    jobListing.source = jobSiteLink.url;
+                    jobListing.jobSite = jobSiteLink.name;
+                    parentResult.jobListings.push(jobListing);
+                  }
+                }
+                
+                // Update the website in the processing queue with enhanced score and data
+                if (websiteProcessingQueue[parentWebsiteIndex]) {
+                  console.log(`Updating processing queue item ${parentWebsiteIndex} with job site results`);
+                  
+                  websiteProcessingQueue[parentWebsiteIndex] = {
+                    ...websiteProcessingQueue[parentWebsiteIndex],
+                    score: parentResult.score,
+                    jobKeywords: parentResult.jobKeywords,
+                    jobSpecificKeywords: parentResult.jobSpecificKeywords,
+                    jobListings: parentResult.jobListings,
+                    jobSiteLinks: parentResult.jobSiteLinks
+                  };
+                  
+                  // Update the cache with the enhanced result
+                  cacheWebsiteResult(parentWebsite.website, {
+                    ...parentResult,
+                    score: parentResult.score,
+                    jobKeywords: parentResult.jobKeywords,
+                    jobSpecificKeywords: parentResult.jobSpecificKeywords,
+                    jobListings: parentResult.jobListings,
+                    jobSiteLinks: parentResult.jobSiteLinks
+                  });
+                }
+                
+                // Update the result in searchResults if it's already been added
+                let resultUpdated = false;
+                for (let i = 0; i < searchResults.length; i++) {
+                  if (searchResults[i].website === parentWebsite.website) {
+                    console.log(`Updating search result for ${parentWebsite.website} with job site data`);
+                    
+                    searchResults[i] = {
+                      ...searchResults[i],
+                      score: parentResult.score,
+                      jobKeywords: parentResult.jobKeywords,
+                      jobSpecificKeywords: parentResult.jobSpecificKeywords,
+                      jobListings: parentResult.jobListings,
+                      jobSiteLinks: parentResult.jobSiteLinks
+                    };
+                    
+                    // Make sure jobSpecificKeywords is properly initialized in the result we're sending
+                    if (!searchResults[i].jobSpecificKeywords) {
+                      console.log(`Initializing empty jobSpecificKeywords for ${searchResults[i].website} before sending update`);
+                      searchResults[i].jobSpecificKeywords = [];
+                    } else {
+                      console.log(`Sending ${searchResults[i].jobSpecificKeywords.length} jobSpecificKeywords for ${searchResults[i].website}: ${searchResults[i].jobSpecificKeywords.join(', ')}`);
+                    }
+                    
+                    // Save to storage for persistence
+                    storeSearchState();
+                    
+                    // Send the updated result to popup
+                    forwardMessageToPopup({
+                      action: 'updateResult',
+                      result: searchResults[i]
+                    });
+                    
+                    // Also send to content script to update session storage
+                    chrome.tabs.query({active: true, currentWindow: true}, function(tabs) {
+                      const currentTab = tabs[0];
+                      if (currentTab && currentTab.url && currentTab.url.includes('google.com/maps')) {
+                        chrome.tabs.sendMessage(currentTab.id, {
+                          action: 'updateResult',
+                          result: searchResults[i]
+                        });
+                      }
+                    });
+                    
+                    resultUpdated = true;
+                    break;
+                  }
+                }
+                
+                if (!resultUpdated) {
+                  console.log(`Result for ${parentWebsite.website} not found in searchResults, can't update UI`);
+                }
+              } else {
+                console.log(`No keywords found on job site ${jobSiteLink.name}`);
+              }
+            } else {
+              console.log(`No valid results returned from job site script execution`);
+            }
+          
+          // Close the tab
+          chrome.tabs.remove(tabId);
+          
+          // Process the next job site link if any
+          if (remainingLinks.length > 0) {
+            setTimeout(() => {
+              processJobSiteLinks(remainingLinks, parentWebsite, parentResult, searchData, parentWebsiteIndex);
+            }, 500);
+          } else {
+            // We've processed all job site links, store the final result state
+            console.log(`Finished processing all job site links for ${parentWebsite.website}`);
+            storeSearchState();
+          }
+        }).catch(error => {
+          console.error('Error executing script on job site:', error);
+          
+          // Close the tab
+          chrome.tabs.remove(tabId);
+          
+          // Process the next job site link if any
+          if (remainingLinks.length > 0) {
+            setTimeout(() => {
+              processJobSiteLinks(remainingLinks, parentWebsite, parentResult, searchData, parentWebsiteIndex);
+            }, 500);
+          }
+        });
+        }, 1000); // Give the page 1 second to fully initialize
+      }
+    });
+    
+    // Set a timeout of 20 seconds for loading the website
+    loadTimeout = setTimeout(() => {
+      if (!loadCompleted) {
+        console.log(`Timeout: Job site ${jobSiteLink.url} took too long to load (> 20s)`);
+        
+        // Try to close the tab
+        try {
+          chrome.tabs.remove(tabId);
+        } catch (e) {
+          console.error('Error closing tab:', e);
+        }
+        
+        // Process the next job site link if any
+        if (remainingLinks.length > 0) {
+          setTimeout(() => {
+            processJobSiteLinks(remainingLinks, parentWebsite, parentResult, searchData, parentWebsiteIndex);
+          }, 500);
+        }
+      }
+    }, 20000); // 20 seconds timeout (increased to give more time for heavy job sites)
+  });
+}
+
+// Function to be injected into job site tabs to search for keywords
+function searchJobSiteForKeywords(parentWebsite, searchData, jobSiteLink) {
+  // Result object for the job site
+  const result = {
+    foundKeywords: [],
+    jobListings: [],
+    jobSiteName: jobSiteLink.name
+  };
+  
+  try {
+    console.log(`Searching job site ${jobSiteLink.name} for keywords: ${searchData.keywords.join(', ')}`);
+    
+    // Get the search keywords
+    const searchKeywords = searchData.keywords;
+    
+    // Get the job-specific keywords if available
+    const jobKeywords = searchData.jobKeywords || [];
+    if (jobKeywords.length > 0) {
+      console.log(`Also searching for job-specific keywords: ${jobKeywords.join(', ')}`);
+    }
+    
+    // Get all text content of the page
+    const pageText = document.body.textContent.toLowerCase();
+    console.log(`Job site page text length: ${pageText.length}`);
+    
+    // Always check for common job-related terms to verify this is actually a job site
+    const jobTerms = ['job', 'career', 'position', 'apply', 'application', 'hiring', 'employment'];
+    const isJobSite = jobTerms.some(term => pageText.includes(term.toLowerCase()));
+    console.log(`Is confirmed job site: ${isJobSite}`);
+    
+    // Initialize job-specific keywords array
+    result.jobSpecificKeywords = [];
+    
+    // Search for user-provided keywords on the job site
+    for (const keyword of searchKeywords) {
+      const keywordLower = keyword.toLowerCase();
+      if (pageText.includes(keywordLower)) {
+        console.log(`Found keyword on job site: ${keyword}`);
+        result.foundKeywords.push(keyword);
+      }
+    }
+    
+    // Search for job-specific keywords on the job site (these get highest scoring)
+    for (const keyword of jobKeywords) {
+      const keywordLower = keyword.toLowerCase();
+      if (pageText.includes(keywordLower)) {
+        console.log(`Found job-specific keyword on job site: ${keyword}`);
+        result.jobSpecificKeywords.push(keyword);
+        
+        // Also add to regular foundKeywords for backward compatibility
+        if (!result.foundKeywords.includes(keyword)) {
+          result.foundKeywords.push(keyword);
+        }
+      }
+    }
+    
+    console.log(`Found ${result.foundKeywords.length} keywords on job site`);
+    
+    // Always look for job listings, even if no keywords were found
+    // Look for job listings on the job site (broader selector to catch more potential listings)
+    const jobElements = Array.from(document.querySelectorAll(
+      'div.job, div.position, li.job-listing, .job-title, .position-title, ' +
+      '[class*="job"], [class*="position"], [class*="opening"], ' +
+      '.careers-table tr, .job-card, .job-item, ' +
+      '.listing-item, [data-test="job-card"], [data-component="JobCard"]'
+    ));
+    
+    console.log(`Found ${jobElements.length} potential job elements`);
+    
+    // Process up to 3 job listings from the job site
+    for (const jobElement of jobElements.slice(0, 3)) {
+      const jobText = jobElement.textContent.trim();
+      
+      // Find the most likely job title
+      let jobTitle = '';
+      const headings = jobElement.querySelectorAll('h1, h2, h3, h4, h5, h6, strong');
+      if (headings.length > 0) {
+        jobTitle = headings[0].textContent.trim();
+      }
+      
+      // Default title if nothing found
+      if (!jobTitle) {
+        jobTitle = 'Job Opening';
+      }
+      
+      // Find matching keywords in this listing
+      const matchedKeywords = searchKeywords.filter(keyword => 
+        jobText.toLowerCase().includes(keyword.toLowerCase())
+      );
+      
+      // Only add if it has matching keywords
+      if (matchedKeywords.length > 0) {
+        console.log(`Found job listing with keywords: ${matchedKeywords.join(', ')}`);
+        result.jobListings.push({
+          title: jobTitle,
+          snippet: jobText.substring(0, 150) + '...',
+          keywords: matchedKeywords
+        });
+      }
+    }
+    
+    // If we found no listings but found keywords, add a generic listing
+    if (result.foundKeywords.length > 0 && result.jobListings.length === 0) {
+      console.log('Creating generic job listing for found keywords');
+      result.jobListings.push({
+        title: 'Job Opportunity',
+        snippet: `This site contains keywords you're looking for: ${result.foundKeywords.join(', ')}`,
+        keywords: result.foundKeywords
+      });
+    }
+    
+    return result;
+  } catch (error) {
+    console.error('Error searching job site:', error);
+    return result;
+  }
+}
+
+// The searchForJobSiteLinks and processCareerPage functions are now imported from career-page-helpers.js
