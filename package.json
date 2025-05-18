@@ -1,6 +1,6 @@
 {
   "name": "google-maps-jobs-search",
-  "version": "1.1.2",
+  "version": "1.2.1",
   "description": "A Chrome extension that helps you find job opportunities by searching businesses on Google Maps and analyzing their websites for job listings and contact information.",
   "main": "index.js",
   "scripts": {

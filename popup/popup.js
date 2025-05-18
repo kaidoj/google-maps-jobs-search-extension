@@ -725,6 +725,8 @@ document.addEventListener('DOMContentLoaded', function() {
       'Job Keywords',
       'Contact Email',
       'Contact Page',
+      'Career Page',
+      'Job Site Links',
       'Last Checked'
     ];
     
@@ -749,6 +751,8 @@ document.addEventListener('DOMContentLoaded', function() {
         escapeForCsv(result.jobKeywords ? result.jobKeywords.join('; ') : ''),
         escapeForCsv(result.contactEmail || ''),
         escapeForCsv(result.contactPage || ''),
+        escapeForCsv(result.careerPage || ''),
+        escapeForCsv(result.jobSiteLinks ? result.jobSiteLinks.map(site => `${site.name}: ${site.url}`).join('; ') : ''),
         result.lastChecked ? new Date(result.lastChecked).toLocaleString() : ''
       ];
       
@@ -963,6 +967,30 @@ document.addEventListener('DOMContentLoaded', function() {
       
       // Re-enable the search button when search is cancelled
       updateSearchButtonStates(false);
+    } else if (message.action === 'updateResult') {
+      // Update an existing result with new information (e.g., from job site links)
+      const existingIndex = allResults.findIndex(result => 
+        result.website === message.result.website
+      );
+      
+      if (existingIndex !== -1) {
+        // Update the result in our array
+        allResults[existingIndex] = message.result;
+        
+        // Update the UI by replacing the result card
+        const existingResultElements = Array.from(resultsList.children);
+        for (let i = 0; i < existingResultElements.length; i++) {
+          const resultElement = existingResultElements[i];
+          const websiteLink = resultElement.querySelector('a[href="' + message.result.website + '"]');
+          if (websiteLink) {
+            // Replace the old result with the updated one
+            const updatedResultElement = document.createElement('div');
+            addResultToList(message.result, updatedResultElement);
+            resultsList.replaceChild(updatedResultElement.firstChild, resultElement);
+            break;
+          }
+        }
+      }
     }
     
     sendResponse({received: true});
@@ -970,7 +998,7 @@ document.addEventListener('DOMContentLoaded', function() {
   });
   
   // Function to add a result to the results list
-  function addResultToList(result) {
+  function addResultToList(result, container = resultsList) {
     const resultItem = document.createElement('div');
     resultItem.className = 'result-item';
     
@@ -1011,10 +1039,18 @@ document.addEventListener('DOMContentLoaded', function() {
         const email = document.createElement('p');
         email.innerHTML = '<strong>Contact:</strong> <a href="mailto:' + result.contactEmail + '">' + result.contactEmail + '</a>';
         resultItem.appendChild(email);
-      } else if (result.contactPage) {
+      }
+      
+      if (result.contactPage) {
         const contactPage = document.createElement('p');
         contactPage.innerHTML = '<strong>Contact page:</strong> <a href="' + result.contactPage + '" target="_blank">View</a>';
         resultItem.appendChild(contactPage);
+      }
+      
+      if (result.careerPage) {
+        const careerPage = document.createElement('p');
+        careerPage.innerHTML = '<strong>Career page:</strong> <a href="' + result.careerPage + '" target="_blank">View</a>';
+        resultItem.appendChild(careerPage);
       }
       
       if (result.jobKeywords && result.jobKeywords.length > 0) {
@@ -1062,6 +1098,32 @@ document.addEventListener('DOMContentLoaded', function() {
         jobListingsSection.appendChild(jobListingsList);
         resultItem.appendChild(jobListingsSection);
       }
+      
+      // Display job site links if available (new section)
+      if (result.jobSiteLinks && result.jobSiteLinks.length > 0) {
+        const jobSiteSection = document.createElement('div');
+        jobSiteSection.className = 'job-site-links-section';
+        
+        const jobSiteHeader = document.createElement('p');
+        jobSiteHeader.innerHTML = `<strong>Found ${result.jobSiteLinks.length} job site link(s):</strong>`;
+        jobSiteSection.appendChild(jobSiteHeader);
+        
+        const jobSiteList = document.createElement('ul');
+        jobSiteList.className = 'job-site-links-list';
+        
+        result.jobSiteLinks.forEach(site => {
+          const siteItem = document.createElement('li');
+          siteItem.className = 'job-site-item';
+          
+          const siteName = site.name || 'Job Board';
+          siteItem.innerHTML = `<a href="${site.url}" target="_blank">${siteName}</a>`;
+          
+          jobSiteList.appendChild(siteItem);
+        });
+        
+        jobSiteSection.appendChild(jobSiteList);
+        resultItem.appendChild(jobSiteSection);
+      }
     }
     
     // Create footer section with date and score
@@ -1097,6 +1159,6 @@ document.addEventListener('DOMContentLoaded', function() {
     
     resultItem.appendChild(resultFooter);
     
-    resultsList.appendChild(resultItem);
+    container.appendChild(resultItem);
   }
 });
