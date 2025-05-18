@@ -376,6 +376,21 @@ function processWebsiteWithTab(website, nextWebsiteIndex, searchData) {
                   processJobSiteLinks(jobSiteLinks.slice(0, 2), website, completeResult, searchData, nextWebsiteIndex);
                 }, 500);
               }
+              
+              // Process career page(s) if found
+              if (completeResult.careerPage) {
+                console.log(`Processing career page for ${website.businessName}: ${completeResult.careerPage}`);
+                setTimeout(() => {
+                  processCareerPage(completeResult.careerPage, website, completeResult, searchData, nextWebsiteIndex);
+                }, 1000);
+              } else if (completeResult.jobPages && completeResult.jobPages.length > 0) {
+                // Process the first job page if no specific career page was identified
+                const jobPage = completeResult.jobPages[0];
+                console.log(`Processing job page for ${website.businessName}: ${jobPage.url}`);
+                setTimeout(() => {
+                  processCareerPage(jobPage.url, website, completeResult, searchData, nextWebsiteIndex);
+                }, 1000);
+              }
             }
           } else {
             // Mark as processed even if there's an error
@@ -572,125 +587,13 @@ function searchForJobContent(website, searchData) {
           // DO NOT set job/career pages as contact pages
           result.careerPage = href;
           
-          // Visit the job page to search for specific keywords
+          // Store the career page to visit after initial scanning is complete
+          // We don't directly visit it here to avoid multiple tabs being opened simultaneously
+          // The actual career page processing will happen after this website's scan completes
           try {
-            console.log(`Opening career page in new tab to search for job site links: ${href}`);
-            
-            // Instead of an iframe which might be blocked by CSP, use a dedicated tab for the career page
-            chrome.tabs.create({ 
-              url: href,
-              active: false // Open in background tab
-            }, tab => {
-              // Wait for the tab to load
-              const tabId = tab.id;
-              let loadTimeout = null;
-              let loadCompleted = false;
-              
-              // Set up a listener for when the tab completes loading
-              chrome.tabs.onUpdated.addListener(function listener(updatedTabId, changeInfo) {
-                if (updatedTabId === tabId && changeInfo.status === 'complete') {
-                  loadCompleted = true;
-                  // Remove this listener
-                  chrome.tabs.onUpdated.removeListener(listener);
-                  
-                  // Clear timeout if it's still active
-                  if (loadTimeout) {
-                    clearTimeout(loadTimeout);
-                    loadTimeout = null;
-                  }
-                  
-                  console.log(`Career page tab ${tabId} has completed loading`);
-                  
-                  // Give the page a moment to fully initialize
-                  setTimeout(() => {
-                    // Execute script in the tab to search for job site links
-                    chrome.scripting.executeScript({
-                      target: { tabId },
-                      function: searchForJobSiteLinks,
-                      args: [href]
-                    }).then(results => {
-                      if (results && results[0] && results[0].result) {
-                        const careerPageResult = results[0].result;
-                        console.log(`Found job site links on career page:`, careerPageResult);
-                        
-                        // Process job site links if found
-                        const knownJobSites = [
-                          { domain: 'bamboohr.com', name: 'BambooHR' },
-                          { domain: 'lever.co', name: 'Lever' },
-                          { domain: 'greenhouse.io', name: 'Greenhouse' },
-                          { domain: 'workday.com', name: 'Workday' },
-                          { domain: 'myworkdayjobs.com', name: 'Workday Jobs' },
-                          { domain: 'taleo.net', name: 'Taleo' },
-                          { domain: 'smartrecruiters.com', name: 'SmartRecruiters' },
-                          { domain: 'jobvite.com', name: 'Jobvite' },
-                          { domain: 'applytojob.com', name: 'ApplyToJob' },
-                          { domain: 'recruitee.com', name: 'Recruitee' },
-                          { domain: 'applicantstack.com', name: 'ApplicantStack' }
-                        ];
-                        
-                        // If job site links were found
-                        if (careerPageResult.jobSiteLinks && careerPageResult.jobSiteLinks.length > 0) {
-                          // Add a bonus to the score for having links to job sites
-                          result.score += 25; // Significant bonus for having specific job site links
-                          console.log(`Found ${careerPageResult.jobSiteLinks.length} job site links on career page`);
-                          
-                          // Process up to 2 job site links
-                          for (const jobSiteLink of careerPageResult.jobSiteLinks.slice(0, 2)) {
-                            // Determine which job site this is
-                            const jobSite = knownJobSites.find(site => jobSiteLink.url.includes(site.domain));
-                            const jobSiteName = jobSite ? jobSite.name : 'Job Site';
-                            
-                            // Check if we already have this job site link
-                            const isDuplicate = result.jobSiteLinks.some(link => link.url === jobSiteLink.url);
-                            
-                            if (!isDuplicate) {
-                              // Add to job site links
-                              result.jobSiteLinks.push({
-                                url: jobSiteLink.url,
-                                name: jobSiteName,
-                                foundOn: 'Career Page'
-                              });
-                              
-                              console.log(`Added job site link from career page: ${jobSiteName} at ${jobSiteLink.url}`);
-                            }
-                          }
-                        }
-                        
-                        // If keywords were found on the career page
-                        if (careerPageResult.keywords && careerPageResult.keywords.length > 0) {
-                          for (const keyword of careerPageResult.keywords) {
-                            if (!result.jobKeywords.includes(keyword)) {
-                              result.jobKeywords.push(keyword);
-                            }
-                          }
-                        }
-                      
-                        // Process any keywords found on the page
-                        // We'll use the tab's document content directly instead of iframes
-                        
-                        // Close the tab after we're done processing
-                        chrome.tabs.remove(tabId);
-                      }
-                    }).catch(error => {
-                      console.error('Error searching career page:', error);
-                      chrome.tabs.remove(tabId);
-                    });
-                  }, 1000); // Give the page 1 second to fully initialize
-                }
-              });
-              
-              // Set timeout for loading the career page
-              loadTimeout = setTimeout(() => {
-                if (!loadCompleted) {
-                  console.log(`Timeout: Career page tab took too long to load (> 10s)`);
-                  try {
-                    chrome.tabs.remove(tabId);
-                  } catch (e) {
-                    console.error('Error closing tab:', e);
-                  }
-                }
-              }, 10000); // 10 second timeout
-            });
+            console.log(`Found career/job page: ${href} - will process after initial scan`);
+            // We've stored the href in result.careerPage and result.jobPages already
+            // So we don't need to do anything else here 
           } catch (error) {
             console.error('Error setting up job page visit:', error);
           }
