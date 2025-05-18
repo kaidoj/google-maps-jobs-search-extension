@@ -273,6 +273,13 @@ document.addEventListener('DOMContentLoaded', function() {
             
             finalResults.forEach(result => {
               if (!allResults.some(existing => existing.website === result.website)) {
+                // Make sure jobSpecificKeywords is always an array
+                if (!result.jobSpecificKeywords) {
+                  console.log(`Initializing empty jobSpecificKeywords for ${result.website} from session storage`);
+                  result.jobSpecificKeywords = [];
+                } else {
+                  console.log(`Loaded ${result.jobSpecificKeywords.length} jobSpecificKeywords for ${result.website} from session storage: ${result.jobSpecificKeywords.join(', ')}`);
+                }
                 allResults.push(result);
                 addResultToList(result);
               }
@@ -688,6 +695,7 @@ document.addEventListener('DOMContentLoaded', function() {
               address: queueItem.address || "",
               website: queueItem.website,
               jobKeywords: queueItem.jobKeywords || [],
+              jobSpecificKeywords: queueItem.jobSpecificKeywords || [], // Ensure this field is included
               contactEmail: queueItem.contactEmail,
               contactPage: queueItem.contactPage,
               jobPages: queueItem.jobPages || [],
@@ -700,6 +708,16 @@ document.addEventListener('DOMContentLoaded', function() {
         }
       });
     }
+    
+    // Ensure all results have jobSpecificKeywords properly initialized
+    allResults.forEach(result => {
+      if (!result.jobSpecificKeywords) {
+        console.log(`[DEBUG] Initializing empty jobSpecificKeywords for ${result.website} in displayBackgroundResults`);
+        result.jobSpecificKeywords = [];
+      } else {
+        console.log(`[DEBUG] Found ${result.jobSpecificKeywords.length} jobSpecificKeywords for ${result.website} in background results: ${result.jobSpecificKeywords.join(', ')}`);
+      }
+    });
     
     // Display each result
     allResults.forEach(result => {
@@ -716,6 +734,16 @@ document.addEventListener('DOMContentLoaded', function() {
         if (data.popupResults && data.popupResults.length > 0) {
           console.log(`Found ${data.popupResults.length} results in popupResults storage`);
           allResults = data.popupResults;
+          
+          // Ensure all results have jobSpecificKeywords properly initialized
+          allResults.forEach(result => {
+            if (!result.jobSpecificKeywords) {
+              console.log(`[DEBUG] Initializing empty jobSpecificKeywords for ${result.website} from popupResults storage`);
+              result.jobSpecificKeywords = [];
+            } else {
+              console.log(`[DEBUG] Found ${result.jobSpecificKeywords.length} jobSpecificKeywords for ${result.website} in popupResults: ${result.jobSpecificKeywords.join(', ')}`);
+            }
+          });
           
           // Display these results
           allResults.forEach(result => {
@@ -803,6 +831,16 @@ document.addEventListener('DOMContentLoaded', function() {
       // Restore results
       resultsList.innerHTML = ''; // Clear current results
       allResults = state.results || [];
+      
+      // Ensure all results have jobSpecificKeywords properly initialized
+      allResults.forEach(result => {
+        if (!result.jobSpecificKeywords) {
+          console.log(`Initializing empty jobSpecificKeywords for ${result.website} during restore`);
+          result.jobSpecificKeywords = [];
+        } else {
+          console.log(`Restored ${result.jobSpecificKeywords.length} jobSpecificKeywords for ${result.website}: ${result.jobSpecificKeywords.join(', ')}`);
+        }
+      });
       
       // Display restored results
       allResults.forEach(result => {
@@ -1427,6 +1465,14 @@ document.addEventListener('DOMContentLoaded', function() {
       );
       
       if (existingIndex !== -1) {
+        // Ensure jobSpecificKeywords is always an array
+        if (!message.result.jobSpecificKeywords) {
+          console.log(`No jobSpecificKeywords in updated result for ${message.result.website}, using empty array`);
+          message.result.jobSpecificKeywords = [];
+        } else {
+          console.log(`Received ${message.result.jobSpecificKeywords.length} jobSpecificKeywords for ${message.result.website}: ${message.result.jobSpecificKeywords.join(', ')}`);
+        }
+        
         // Update the result in our array
         allResults[existingIndex] = message.result;
         
@@ -1443,6 +1489,48 @@ document.addEventListener('DOMContentLoaded', function() {
             break;
           }
         }
+        
+        // Save the updated results to storage to preserve them when popup reopens
+        console.log('Saving updated results to storage after external search');
+        
+        // Get the current timestamp or use current time
+        const timestamp = Date.now();
+        
+        // Save to local storage for persistence, including completion timestamp
+        chrome.storage.local.set({
+          'popupResults': allResults,
+          'popupStatus': 'Search completed!',
+          'popupProgress': '100%',
+          'searchCompletedTimestamp': timestamp
+        }, function() {
+          console.log(`Saved ${allResults.length} results to local storage with timestamp: ${timestamp}`);
+        });
+        
+        // Also update in session storage if on a Google Maps page
+        chrome.tabs.query({active: true, currentWindow: true}, function(tabs) {
+          const currentTab = tabs[0];
+          if (currentTab && currentTab.url && currentTab.url.includes('google.com/maps')) {
+            chrome.scripting.executeScript({
+              target: { tabId: currentTab.id },
+              function: (resultsJson, timestamp) => {
+                try {
+                  // Update the final results and timestamp in session storage
+                  sessionStorage.setItem('gmjs_finalResults', resultsJson);
+                  sessionStorage.setItem('gmjs_searchCompletedTimestamp', timestamp);
+                  return true;
+                } catch (e) {
+                  console.error('Error updating final results in session storage:', e);
+                  return false;
+                }
+              },
+              args: [JSON.stringify(allResults), timestamp.toString()]
+            }).then(() => {
+              console.log('Updated session storage with latest results');
+            }).catch(err => {
+              console.error('Error executing script to update session storage:', err);
+            });
+          }
+        });
       }
     }
     
@@ -1514,11 +1602,18 @@ document.addEventListener('DOMContentLoaded', function() {
       
       // Display job-specific keywords if available (highlighted with higher importance)
       if (result.jobSpecificKeywords && result.jobSpecificKeywords.length > 0) {
+        console.log(`[DEBUG] Adding high priority matches for ${result.website}: ${result.jobSpecificKeywords.join(', ')}`);
         const jobSpecificKeywords = document.createElement('p');
         jobSpecificKeywords.className = 'job-specific-keywords';
         jobSpecificKeywords.innerHTML = '<strong>High priority matches:</strong> <span class="highlight">' + 
           result.jobSpecificKeywords.join('</span>, <span class="highlight">') + '</span>';
         resultItem.appendChild(jobSpecificKeywords);
+      } else {
+        console.log(`[DEBUG] No high priority matches for ${result.website}. jobSpecificKeywords value:`, 
+                    result.jobSpecificKeywords === undefined ? 'undefined' : 
+                    result.jobSpecificKeywords === null ? 'null' : 
+                    Array.isArray(result.jobSpecificKeywords) ? `empty array [${result.jobSpecificKeywords.length}]` : 
+                    typeof result.jobSpecificKeywords);
       }
       
       // Display job listings if available

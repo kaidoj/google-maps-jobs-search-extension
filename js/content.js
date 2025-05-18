@@ -240,6 +240,49 @@ function initialize() {
         progress: sessionStorage.getItem('gmjs_contentProgress')
       });
       return true; // Keep messaging channel open for async operations
+    } else if (message.action === 'updateResult') {
+      // Handle updates to search results (e.g. after external web search completes)
+      console.log('Received updateResult for website:', message.result?.website);
+      
+      try {
+        // Ensure jobSpecificKeywords is always an array in the received message
+        if (!message.result.jobSpecificKeywords) {
+          console.log(`No jobSpecificKeywords in received result for ${message.result.website}, using empty array`);
+          message.result.jobSpecificKeywords = [];
+        } else {
+          console.log(`Received ${message.result.jobSpecificKeywords.length} jobSpecificKeywords for ${message.result.website}: ${message.result.jobSpecificKeywords.join(', ')}`);
+        }
+        
+        // Update the final results in session storage
+        const finalResultsStr = sessionStorage.getItem('gmjs_finalResults');
+        if (finalResultsStr) {
+          const finalResults = JSON.parse(finalResultsStr);
+          if (Array.isArray(finalResults) && finalResults.length > 0) {
+            // Find and update the specific result
+            const resultIndex = finalResults.findIndex(result => result.website === message.result.website);
+            if (resultIndex !== -1) {
+              // Update the result in our array
+              finalResults[resultIndex] = message.result;
+              console.log(`Updated result for ${message.result.website} in session storage`);
+              
+              // Save the updated array back to session storage
+              sessionStorage.setItem('gmjs_finalResults', JSON.stringify(finalResults));
+              
+              // Also save a timestamp of when the results were last updated
+              sessionStorage.setItem('gmjs_searchCompletedTimestamp', Date.now().toString());
+            } else {
+              console.log(`Result for ${message.result.website} not found in session storage`);
+            }
+          }
+        } else {
+          console.log('No finalResults found in session storage to update');
+        }
+      } catch (e) {
+        console.error('Error updating result in session storage:', e);
+      }
+      
+      sendResponse({ status: 'result_updated' });
+      return true; // Keep messaging channel open
     }
     
     // Default return for any other messages
@@ -1046,6 +1089,13 @@ async function extractBusinessInfo() {
       for (let i = 0; i < 6; i++) { // Limit ancestor search depth
         if (!element || !element.parentElement) break;
         
+        element = element.parentElement;
+        
+        // Check if this ancestor matches any of our container selectors
+        if (containerSelectors.some(selector => element.matches(selector))) {
+          container = element;
+          break;
+        }
       }
       
       // If we didn't find a specific container, use the main details panel as container

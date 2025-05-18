@@ -173,6 +173,16 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       }
       
       if (resultsToReturn.length > 0) {
+        // Ensure all results have jobSpecificKeywords properly initialized
+        resultsToReturn.forEach(result => {
+          if (!result.jobSpecificKeywords) {
+            console.log(`[DEBUG] Initializing empty jobSpecificKeywords for ${result.website} in getSearchResults response`);
+            result.jobSpecificKeywords = [];
+          } else {
+            console.log(`[DEBUG] Found ${result.jobSpecificKeywords.length} jobSpecificKeywords for ${result.website} in stored results: ${result.jobSpecificKeywords.join(', ')}`);
+          }
+        });
+        
         sendResponse({ 
           results: resultsToReturn,
           status: data.searchStatus || 'unknown',
@@ -185,6 +195,14 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         });
       } else {
         // Fall back to in-memory results
+        // Ensure all in-memory results have jobSpecificKeywords
+        searchResults.forEach(result => {
+          if (!result.jobSpecificKeywords) {
+            console.log(`[DEBUG] Initializing empty jobSpecificKeywords for ${result.website} in in-memory results`);
+            result.jobSpecificKeywords = [];
+          }
+        });
+        
         sendResponse({ 
           results: searchResults,
           status: searchStatus,
@@ -306,8 +324,19 @@ function cacheWebsiteResult(url, result) {
 
 // Process the next website in the queue
 function processNextWebsite(searchData) {
+  // Safety check to ensure websiteProcessingQueue is defined and valid
+  if (!websiteProcessingQueue || !Array.isArray(websiteProcessingQueue) || websiteProcessingQueue.length === 0) {
+    console.error('Error: websiteProcessingQueue is undefined, not an array, or empty');
+    // Reset the processing state
+    processingInProgress = false;
+    searchStatus = 'complete';
+    storeSearchState();
+    return;
+  }
+  
   // Check if there are any unprocessed websites
-  const nextWebsiteIndex = websiteProcessingQueue.findIndex(site => !site.processed);
+  // Filter out any undefined elements before calling findIndex
+  const nextWebsiteIndex = websiteProcessingQueue.findIndex(site => site && !site.processed);
   
   if (nextWebsiteIndex === -1) {
     // All websites processed
@@ -343,9 +372,11 @@ function processNextWebsite(searchData) {
   console.log('Processing website with name:', website.businessName);
   
   // Update progress - show current website being processed
-  const processedCount = websiteProcessingQueue.filter(site => site.processed).length;
+  // Add safety check for when filtering sites
+  const processedCount = websiteProcessingQueue.filter(site => site && site.processed).length;
   const totalCount = Math.min(websiteProcessingQueue.length, maxResultsLimit);
-  const progress = 50 + ((processedCount / totalCount) * 50);
+  // Prevent division by zero
+  const progress = totalCount > 0 ? 50 + ((processedCount / totalCount) * 50) : 50;
   
   forwardMessageToPopup({
     action: 'updateProgress',
@@ -854,11 +885,12 @@ function cancelSearchProcess() {
   }
   
   // First, find any tabs that were opened by our extension for website processing
-  if (websiteProcessingQueue && websiteProcessingQueue.length > 0) {
+  if (websiteProcessingQueue && Array.isArray(websiteProcessingQueue) && websiteProcessingQueue.length > 0) {
     // Only query for tabs that match websites in our queue
     const websiteUrls = websiteProcessingQueue
-      .filter(site => !site.processed)
-      .map(site => site.website);
+      .filter(site => site && !site.processed) // Check that site is defined
+      .map(site => site.website)
+      .filter(website => website); // Filter out any undefined websites
     
     if (websiteUrls.length > 0) {
       chrome.tabs.query({}, tabs => {
@@ -1046,10 +1078,12 @@ function processJobSiteLinks(jobSiteLinks, parentWebsite, parentResult, searchDa
                 // Add job-specific keywords if found
                 if (jobSiteResult.jobSpecificKeywords && jobSiteResult.jobSpecificKeywords.length > 0) {
                   console.log(`Found ${jobSiteResult.jobSpecificKeywords.length} job-specific keywords on job site: ${jobSiteResult.jobSpecificKeywords.join(', ')}`);
+                  console.log(`Will update result for ${parentWebsite.website} with these job-specific keywords`);
                   
                   // Initialize jobSpecificKeywords array if needed
                   if (!parentResult.jobSpecificKeywords) {
                     parentResult.jobSpecificKeywords = [];
+                    console.log('Initialized empty jobSpecificKeywords array for parent result');
                   }
                   
                   // Add job-specific keywords to parent result
@@ -1120,11 +1154,34 @@ function processJobSiteLinks(jobSiteLinks, parentWebsite, parentResult, searchDa
                       jobSiteLinks: parentResult.jobSiteLinks
                     };
                     
+                    // Make sure jobSpecificKeywords is properly initialized in the result we're sending
+                    if (!searchResults[i].jobSpecificKeywords) {
+                      console.log(`Initializing empty jobSpecificKeywords for ${searchResults[i].website} before sending update`);
+                      searchResults[i].jobSpecificKeywords = [];
+                    } else {
+                      console.log(`Sending ${searchResults[i].jobSpecificKeywords.length} jobSpecificKeywords for ${searchResults[i].website}: ${searchResults[i].jobSpecificKeywords.join(', ')}`);
+                    }
+                    
+                    // Save to storage for persistence
+                    storeSearchState();
+                    
                     // Send the updated result to popup
                     forwardMessageToPopup({
                       action: 'updateResult',
                       result: searchResults[i]
                     });
+                    
+                    // Also send to content script to update session storage
+                    chrome.tabs.query({active: true, currentWindow: true}, function(tabs) {
+                      const currentTab = tabs[0];
+                      if (currentTab && currentTab.url && currentTab.url.includes('google.com/maps')) {
+                        chrome.tabs.sendMessage(currentTab.id, {
+                          action: 'updateResult',
+                          result: searchResults[i]
+                        });
+                      }
+                    });
+                    
                     resultUpdated = true;
                     break;
                   }
