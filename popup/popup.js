@@ -280,6 +280,11 @@ document.addEventListener('DOMContentLoaded', function() {
                 } else {
                   console.log(`Loaded ${result.jobSpecificKeywords.length} jobSpecificKeywords for ${result.website} from session storage: ${result.jobSpecificKeywords.join(', ')}`);
                 }
+                
+                // Ensure potential_job_match is initialized
+                if (result.potential_job_match === undefined) {
+                  result.potential_job_match = false;
+                }
                 allResults.push(result);
                 addResultToList(result);
               }
@@ -696,6 +701,7 @@ document.addEventListener('DOMContentLoaded', function() {
               website: queueItem.website,
               jobKeywords: queueItem.jobKeywords || [],
               jobSpecificKeywords: queueItem.jobSpecificKeywords || [], // Ensure this field is included
+              potential_job_match: queueItem.potential_job_match || false, // Include potential job match
               contactEmail: queueItem.contactEmail,
               contactPage: queueItem.contactPage,
               jobPages: queueItem.jobPages || [],
@@ -716,6 +722,11 @@ document.addEventListener('DOMContentLoaded', function() {
         result.jobSpecificKeywords = [];
       } else {
         console.log(`[DEBUG] Found ${result.jobSpecificKeywords.length} jobSpecificKeywords for ${result.website} in background results: ${result.jobSpecificKeywords.join(', ')}`);
+      }
+      
+      // Ensure potential_job_match is initialized
+      if (result.potential_job_match === undefined) {
+        result.potential_job_match = false;
       }
     });
     
@@ -742,6 +753,11 @@ document.addEventListener('DOMContentLoaded', function() {
               result.jobSpecificKeywords = [];
             } else {
               console.log(`[DEBUG] Found ${result.jobSpecificKeywords.length} jobSpecificKeywords for ${result.website} in popupResults: ${result.jobSpecificKeywords.join(', ')}`);
+            }
+            
+            // Ensure potential_job_match is initialized
+            if (result.potential_job_match === undefined) {
+              result.potential_job_match = false;
             }
           });
           
@@ -839,6 +855,11 @@ document.addEventListener('DOMContentLoaded', function() {
           result.jobSpecificKeywords = [];
         } else {
           console.log(`Restored ${result.jobSpecificKeywords.length} jobSpecificKeywords for ${result.website}: ${result.jobSpecificKeywords.join(', ')}`);
+        }
+        
+        // Ensure potential_job_match is initialized
+        if (result.potential_job_match === undefined) {
+          result.potential_job_match = false;
         }
       });
       
@@ -1070,10 +1091,10 @@ document.addEventListener('DOMContentLoaded', function() {
       'Website',
       'Job Keywords',
       'High Priority Keywords',
+      'Potential Job Match',
       'Contact Email',
       'Contact Page',
       'Career Page',
-      'Job Site Links',
       'Last Checked'
     ];
     
@@ -1088,19 +1109,34 @@ document.addEventListener('DOMContentLoaded', function() {
       return scoreB - scoreA;
     });
     
+    // Get the search keywords to filter them
+    const keywordsInput = document.getElementById('keywords');
+    let searchKeywords = [];
+    if (keywordsInput && keywordsInput.value) {
+      searchKeywords = keywordsInput.value.split(',').map(k => k.trim().toLowerCase());
+    }
+    
     // Add result rows
     sortedResults.forEach(result => {
+      // Filter out search keywords from job keywords
+      let filteredJobKeywords = result.jobKeywords || [];
+      if (searchKeywords.length > 0) {
+        filteredJobKeywords = filteredJobKeywords.filter(k => 
+          !searchKeywords.includes(k.toLowerCase())
+        );
+      }
+      
       const row = [
         escapeForCsv(result.score !== undefined ? result.score : '0'),
         escapeForCsv(result.businessName || ''),
         escapeForCsv(result.address || ''),
         escapeForCsv(result.website || ''),
-        escapeForCsv(result.jobKeywords ? result.jobKeywords.join('; ') : ''),
+        escapeForCsv(filteredJobKeywords.length > 0 ? filteredJobKeywords.join('; ') : ''),
         escapeForCsv(result.jobSpecificKeywords ? result.jobSpecificKeywords.join('; ') : ''),
+        escapeForCsv(result.potential_job_match ? 'Yes' : 'No'),
         escapeForCsv(result.contactEmail || ''),
         escapeForCsv(result.contactPage || ''),
         escapeForCsv(result.careerPage || ''),
-        escapeForCsv(result.jobSiteLinks ? result.jobSiteLinks.map(site => `${site.name}: ${site.url}`).join('; ') : ''),
         result.lastChecked ? new Date(result.lastChecked).toLocaleString() : ''
       ];
       
@@ -1116,7 +1152,10 @@ document.addEventListener('DOMContentLoaded', function() {
       return '';
     }
     
-    const stringValue = String(field);
+    // Convert the field to string and normalize special characters
+    const stringValue = String(field).normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+      .replace(/â/g, 'a') // Replace â with a
+      .replace(/[^\x00-\x7F]/g, ''); // Remove non-ASCII characters
     
     // If the field contains quotes, commas, or newlines, enclose it in quotes
     // and escape any quotes inside the field
@@ -1594,10 +1633,37 @@ document.addEventListener('DOMContentLoaded', function() {
         resultItem.appendChild(careerPage);
       }
       
+      // Display potential job match indicator if available
+      if (result.potential_job_match) {
+        const potentialJobMatch = document.createElement('p');
+        potentialJobMatch.className = 'potential-job-match';
+        potentialJobMatch.innerHTML = '<strong>Potential Job Match</strong>';
+        potentialJobMatch.style.color = '#4caf50';
+        potentialJobMatch.style.fontWeight = 'bold';
+        resultItem.appendChild(potentialJobMatch);
+      }
+      
+      // Only display job keywords that aren't search keywords
       if (result.jobKeywords && result.jobKeywords.length > 0) {
-        const keywords = document.createElement('p');
-        keywords.innerHTML = '<strong>Found keywords:</strong> ' + result.jobKeywords.join(', ');
-        resultItem.appendChild(keywords);
+        // Filter out any search keywords that might have been added before this change
+        // Get the search keywords from localStorage to filter them
+        chrome.storage.local.get(['keywords'], function(data) {
+          let searchKeywords = [];
+          if (data.keywords) {
+            searchKeywords = data.keywords.split(',').map(k => k.trim().toLowerCase());
+          }
+          
+          // Filter out search keywords
+          const filteredJobKeywords = result.jobKeywords.filter(k => 
+            !searchKeywords.includes(k.toLowerCase())
+          );
+          
+          if (filteredJobKeywords.length > 0) {
+            const keywords = document.createElement('p');
+            keywords.innerHTML = '<strong>Found keywords:</strong> ' + filteredJobKeywords.join(', ');
+            resultItem.appendChild(keywords);
+          }
+        });
       }
       
       // Display job-specific keywords if available (highlighted with higher importance)
@@ -1656,31 +1722,7 @@ document.addEventListener('DOMContentLoaded', function() {
         resultItem.appendChild(jobListingsSection);
       }
       
-      // Display job site links if available (new section)
-      if (result.jobSiteLinks && result.jobSiteLinks.length > 0) {
-        const jobSiteSection = document.createElement('div');
-        jobSiteSection.className = 'job-site-links-section';
-        
-        const jobSiteHeader = document.createElement('p');
-        jobSiteHeader.innerHTML = `<strong>Found ${result.jobSiteLinks.length} job site link(s):</strong>`;
-        jobSiteSection.appendChild(jobSiteHeader);
-        
-        const jobSiteList = document.createElement('ul');
-        jobSiteList.className = 'job-site-links-list';
-        
-        result.jobSiteLinks.forEach(site => {
-          const siteItem = document.createElement('li');
-          siteItem.className = 'job-site-item';
-          
-          const siteName = site.name || 'Job Board';
-          siteItem.innerHTML = `<a href="${site.url}" target="_blank">${siteName}</a>`;
-          
-          jobSiteList.appendChild(siteItem);
-        });
-        
-        jobSiteSection.appendChild(jobSiteList);
-        resultItem.appendChild(jobSiteSection);
-      }
+      // Job site links section removed to comply with Google Maps scraping policy
     }
     
     // Create footer section with date and score
@@ -1691,7 +1733,14 @@ document.addEventListener('DOMContentLoaded', function() {
     const scoreBadge = document.createElement('span');
     scoreBadge.className = 'score-badge-small';
     const score = typeof result.score === 'number' ? result.score : 0;
-    scoreBadge.textContent = `Score: ${score}`;
+    
+    // Add indicator for potential job match in the score badge
+    if (result.potential_job_match) {
+      scoreBadge.textContent = `Score: ${score}`;
+      scoreBadge.title = "Potential job match found";
+    } else {
+      scoreBadge.textContent = `Score: ${score}`;
+    }
     
     // Set badge color based on score range
     if (score >= 80) {
