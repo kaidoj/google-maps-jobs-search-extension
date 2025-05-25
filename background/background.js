@@ -38,6 +38,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         ...site,
         processed: false,
         jobKeywords: [],
+        jobSpecificKeywords: [],
+        potential_job_match: false,
         contactEmail: null,
         contactPage: null
       };
@@ -459,6 +461,7 @@ function processWebsiteWithTab(website, nextWebsiteIndex, searchData) {
                 website: website.website,
                 jobKeywords: result.jobKeywords || [],
                 jobSpecificKeywords: result.jobSpecificKeywords || [], // Include job-specific keywords
+                potential_job_match: result.potential_job_match || false, // Include potential job match flag
                 contactEmail: result.contactEmail,
                 contactPage: result.contactPage,
                 careerPage: result.careerPage, // Add separate career page field
@@ -595,7 +598,8 @@ function searchForJobContent(website, searchData) {
     jobListings: [],
     jobSiteLinks: [], // New field for job site links like BambooHR
     score: 0, // Initialize score
-    businessName: website.businessName || "Unknown Business" // Explicitly carry over the business name
+    businessName: website.businessName || "Unknown Business", // Explicitly carry over the business name
+    potential_job_match: false // Flag for potential job match
   };
   
   try {
@@ -638,14 +642,12 @@ function searchForJobContent(website, searchData) {
       }
     }
     
-    // Search for user-provided keywords
+    // Search for user-provided keywords (don't include in job keywords as per user request)
     for (const keyword of searchKeywords) {
       const keywordLower = keyword.toLowerCase();
       if (pageText.includes(keywordLower)) {
-        if (!result.jobKeywords.includes(keyword)) {
-          result.jobKeywords.push(keyword);
-          result.score += 20; // Add 20 points for each user keyword found on main page
-        }
+        // We still award points for finding search keywords, but don't include them in jobKeywords
+        result.score += 20; // Add 20 points for each user keyword found on main page
       }
     }
     
@@ -661,6 +663,7 @@ function searchForJobContent(website, searchData) {
           
           // Add to job-specific keywords
           result.jobSpecificKeywords.push(keyword);
+          result.potential_job_match = true; // Mark as potential job match
           
           // Also add to regular job keywords for backward compatibility
           if (!result.jobKeywords.includes(keyword)) {
@@ -1068,12 +1071,8 @@ function processJobSiteLinks(jobSiteLinks, parentWebsite, parentResult, searchDa
                 // Update the parent result with job site findings
                 parentResult.score = Math.max(parentResult.score, 100); // Set score to maximum
                 
-                // Add keywords found on job site to parent result
-                for (const keyword of jobSiteResult.foundKeywords) {
-                  if (!parentResult.jobKeywords.includes(keyword)) {
-                    parentResult.jobKeywords.push(keyword);
-                  }
-                }
+                // Don't add search keywords to parent result's job keywords per user request
+                // We still award points for these in searchJobSiteForKeywords
                 
                 // Add job-specific keywords if found
                 if (jobSiteResult.jobSpecificKeywords && jobSiteResult.jobSpecificKeywords.length > 0) {
@@ -1119,13 +1118,19 @@ function processJobSiteLinks(jobSiteLinks, parentWebsite, parentResult, searchDa
                 if (websiteProcessingQueue[parentWebsiteIndex]) {
                   console.log(`Updating processing queue item ${parentWebsiteIndex} with job site results`);
                   
+                  // If job site has a potential match, update parent
+                  if (jobSiteResult.potential_job_match) {
+                    parentResult.potential_job_match = true;
+                  }
+                  
                   websiteProcessingQueue[parentWebsiteIndex] = {
                     ...websiteProcessingQueue[parentWebsiteIndex],
                     score: parentResult.score,
                     jobKeywords: parentResult.jobKeywords,
                     jobSpecificKeywords: parentResult.jobSpecificKeywords,
                     jobListings: parentResult.jobListings,
-                    jobSiteLinks: parentResult.jobSiteLinks
+                    jobSiteLinks: parentResult.jobSiteLinks,
+                    potential_job_match: parentResult.potential_job_match
                   };
                   
                   // Update the cache with the enhanced result
@@ -1135,7 +1140,8 @@ function processJobSiteLinks(jobSiteLinks, parentWebsite, parentResult, searchDa
                     jobKeywords: parentResult.jobKeywords,
                     jobSpecificKeywords: parentResult.jobSpecificKeywords,
                     jobListings: parentResult.jobListings,
-                    jobSiteLinks: parentResult.jobSiteLinks
+                    jobSiteLinks: parentResult.jobSiteLinks,
+                    potential_job_match: parentResult.potential_job_match
                   });
                 }
                 
@@ -1143,16 +1149,15 @@ function processJobSiteLinks(jobSiteLinks, parentWebsite, parentResult, searchDa
                 let resultUpdated = false;
                 for (let i = 0; i < searchResults.length; i++) {
                   if (searchResults[i].website === parentWebsite.website) {
-                    console.log(`Updating search result for ${parentWebsite.website} with job site data`);
-                    
-                    searchResults[i] = {
-                      ...searchResults[i],
-                      score: parentResult.score,
-                      jobKeywords: parentResult.jobKeywords,
-                      jobSpecificKeywords: parentResult.jobSpecificKeywords,
-                      jobListings: parentResult.jobListings,
-                      jobSiteLinks: parentResult.jobSiteLinks
-                    };
+                    console.log(`Updating search result for ${parentWebsite.website} with job site data`);                      searchResults[i] = {
+                        ...searchResults[i],
+                        score: parentResult.score,
+                        jobKeywords: parentResult.jobKeywords,
+                        jobSpecificKeywords: parentResult.jobSpecificKeywords,
+                        jobListings: parentResult.jobListings,
+                        jobSiteLinks: parentResult.jobSiteLinks,
+                        potential_job_match: parentResult.potential_job_match
+                      };
                     
                     // Make sure jobSpecificKeywords is properly initialized in the result we're sending
                     if (!searchResults[i].jobSpecificKeywords) {
@@ -1256,7 +1261,8 @@ function searchJobSiteForKeywords(parentWebsite, searchData, jobSiteLink) {
   const result = {
     foundKeywords: [],
     jobListings: [],
-    jobSiteName: jobSiteLink.name
+    jobSiteName: jobSiteLink.name,
+    potential_job_match: false
   };
   
   try {
@@ -1283,12 +1289,12 @@ function searchJobSiteForKeywords(parentWebsite, searchData, jobSiteLink) {
     // Initialize job-specific keywords array
     result.jobSpecificKeywords = [];
     
-    // Search for user-provided keywords on the job site
+    // Search for user-provided keywords on the job site, but don't include in results per user request
     for (const keyword of searchKeywords) {
       const keywordLower = keyword.toLowerCase();
       if (pageText.includes(keywordLower)) {
         console.log(`Found keyword on job site: ${keyword}`);
-        result.foundKeywords.push(keyword);
+        // Don't add to foundKeywords array per user request
       }
     }
     
@@ -1298,6 +1304,7 @@ function searchJobSiteForKeywords(parentWebsite, searchData, jobSiteLink) {
       if (pageText.includes(keywordLower)) {
         console.log(`Found job-specific keyword on job site: ${keyword}`);
         result.jobSpecificKeywords.push(keyword);
+        result.potential_job_match = true; // Mark as potential job match
         
         // Also add to regular foundKeywords for backward compatibility
         if (!result.foundKeywords.includes(keyword)) {
@@ -1335,14 +1342,16 @@ function searchJobSiteForKeywords(parentWebsite, searchData, jobSiteLink) {
         jobTitle = 'Job Opening';
       }
       
-      // Find matching keywords in this listing
-      const matchedKeywords = searchKeywords.filter(keyword => 
+      // Find matching keywords in this listing, but exclude search keywords as per user request
+      // Instead, only look for job-specific keywords (high priority keywords)
+      const jobKeywords = searchData.jobKeywords || [];
+      const matchedKeywords = jobKeywords.filter(keyword => 
         jobText.toLowerCase().includes(keyword.toLowerCase())
       );
       
-      // Only add if it has matching keywords
+      // Only add if it has matching job-specific keywords
       if (matchedKeywords.length > 0) {
-        console.log(`Found job listing with keywords: ${matchedKeywords.join(', ')}`);
+        console.log(`Found job listing with job-specific keywords: ${matchedKeywords.join(', ')}`);
         result.jobListings.push({
           title: jobTitle,
           snippet: jobText.substring(0, 150) + '...',
@@ -1351,13 +1360,13 @@ function searchJobSiteForKeywords(parentWebsite, searchData, jobSiteLink) {
       }
     }
     
-    // If we found no listings but found keywords, add a generic listing
-    if (result.foundKeywords.length > 0 && result.jobListings.length === 0) {
-      console.log('Creating generic job listing for found keywords');
+    // If we found no listings but found job-specific keywords, add a generic listing
+    if (result.jobSpecificKeywords && result.jobSpecificKeywords.length > 0 && result.jobListings.length === 0) {
+      console.log('Creating generic job listing for found job-specific keywords');
       result.jobListings.push({
         title: 'Job Opportunity',
-        snippet: `This site contains keywords you're looking for: ${result.foundKeywords.join(', ')}`,
-        keywords: result.foundKeywords
+        snippet: `This site contains job-specific keywords you're looking for: ${result.jobSpecificKeywords.join(', ')}`,
+        keywords: result.jobSpecificKeywords
       });
     }
     
