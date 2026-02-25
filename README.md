@@ -1,8 +1,6 @@
-# Hidden Job Search Helper Extension made with LLM using Copilot Agent and Claude 3.7 Sonnet
+# Hidden Job Search Helper Extension
 
 A Chrome extension that helps you find job opportunities by searching businesses on Google Maps and analyzing their websites for job listings and contact information.
-
-Available on [Chrome Web Store](https://chromewebstore.google.com/detail/google-maps-job-search-he/nicoepfjkeehhlnioobfdpabjgnebhhb)
 
 ## Features
 
@@ -48,7 +46,7 @@ To install and run this extension in Chrome developer mode:
 
 ## Usage
 
-1. Navigate to [Google Maps](https://www.google.com/maps)
+1. Navigate to Google Maps
 2. Click on the extension icon to open the popup
 3. Enter your search criteria:
    - Keywords (e.g., "software engineer", "marketing")
